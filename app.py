@@ -333,9 +333,17 @@ if st.button(f"⚡ Run Deep Analysis on {len(final_candidates)} stocks"):
                                    portfolio_value,rr_ratio,raw_data,
                                    hb_plays,threshold,all_scores,risk_pct_input)
         fvg_results = scan_market_for_fvg(raw_data) if raw_data else pd.DataFrame()
+        analysis_inputs = {
+            "portfolio_value": portfolio_value,
+            "risk_pct_input": risk_pct_input,
+            "rr_ratio": rr_ratio,
+            "threshold": threshold,
+            "high_beta_pct": high_beta_pct,
+        }
         st.session_state.update({"results":results,"plan":plan,
                                   "macro_score":macro_score,"regime":regime,
-                                  "fvg_results":fvg_results})
+                                  "fvg_results":fvg_results,
+                                  "analysis_inputs":analysis_inputs})
         if tg_token and tg_chat_id:
             msg=build_morning_message(macro_score,stance,regime,regime_conf,
                                        rec_sector,allocation,plan,scores,
@@ -355,6 +363,29 @@ results    =st.session_state["results"]
 plan       =st.session_state["plan"]
 macro_score=st.session_state["macro_score"]
 regime     =st.session_state["regime"]
+
+saved_inputs = st.session_state.get("analysis_inputs", {})
+current_inputs = {
+    "portfolio_value": portfolio_value,
+    "risk_pct_input": risk_pct_input,
+    "rr_ratio": rr_ratio,
+    "threshold": threshold,
+    "high_beta_pct": high_beta_pct,
+}
+if saved_inputs and saved_inputs != current_inputs:
+    old_port = saved_inputs.get("portfolio_value", 0)
+    st.warning(
+        "⚠️ Settings changed after the last Deep Analysis. "
+        "Sizing numbers below may reflect old inputs."
+    )
+    st.caption(
+        f"Last analysis portfolio: Rp {old_port:,.0f} | "
+        f"Current portfolio: Rp {portfolio_value:,.0f}. "
+        "Click **Run Deep Analysis** again to refresh the plan."
+    )
+
+analysis_portfolio_value = saved_inputs.get("portfolio_value", portfolio_value)
+analysis_risk_pct_input = saved_inputs.get("risk_pct_input", risk_pct_input)
 
 # ═══════════════════════════════════════════════════════════
 # TABS
@@ -616,7 +647,7 @@ with tab4:
 with tab5:
     st.subheader("💰 Risk-Based Position Sizing (1% Rule)")
     st.caption(
-        f"Risk per trade: **{risk_pct_input*100:.1f}%** = Rp {portfolio_value*risk_pct_input:,.0f} | "
+        f"Risk per trade: **{analysis_risk_pct_input*100:.1f}%** = Rp {analysis_portfolio_value*analysis_risk_pct_input:,.0f} | "
         f"1 lot = 100 shares | Max single position: 5% | Total cap: investable capital"
     )
 
@@ -698,10 +729,10 @@ with tab5:
 
     st.divider()
     c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Portfolio",      f"Rp {portfolio_value:,.0f}")
+    c1.metric("Portfolio",      f"Rp {analysis_portfolio_value:,.0f}")
     c2.metric("Total Deployed", f"Rp {summary.get('total_deployed',0):,.0f}")
     c3.metric("% Deployed",     f"{summary.get('pct_deployed',0):.1f}%")
-    c4.metric("Max risk/trade", f"Rp {portfolio_value*risk_pct_input:,.0f}")
+    c4.metric("Max risk/trade", f"Rp {analysis_portfolio_value*analysis_risk_pct_input:,.0f}")
 
     # Sanity check — should never exceed 100% now
     pct = summary.get("pct_deployed", 0)
