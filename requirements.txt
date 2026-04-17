@@ -1,0 +1,14 @@
+yfinance>=0.2.40
+feedparser>=6.0
+streamlit>=1.28
+matplotlib>=3.7
+mplfinance>=0.12
+numpy>=1.24
+pandas>=2.0
+requests>=2.28
+schedule>=1.2
+nltk>=3.8
+scikit-ollama>=0.3
+pillow>=9.0
+reportlab>=4.0
+scipy>=1.10
