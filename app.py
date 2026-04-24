@@ -138,8 +138,23 @@ active_weights = learned_weights if (use_learned and journal_stats) else DEFAULT
 
 st.sidebar.divider()
 st.sidebar.subheader("📱 Telegram")
-tg_token   = st.sidebar.text_input("Bot Token",  type="password")
-tg_chat_id = st.sidebar.text_input("Chat ID")
+secret_tg_token = (
+    st.secrets.get("telegram_bot_token")
+    or st.secrets.get("TG_BOT_TOKEN")
+    or st.secrets.get("bot_token")
+    or st.secrets.get("telegram", {}).get("bot_token")
+)
+secret_tg_chat_id = (
+    st.secrets.get("telegram_chat_id")
+    or st.secrets.get("TG_CHAT_ID")
+    or st.secrets.get("chat_id")
+    or st.secrets.get("telegram", {}).get("chat_id")
+)
+tg_token   = st.sidebar.text_input("Bot Token",  type="password", value=secret_tg_token or "")
+tg_chat_id = st.sidebar.text_input("Chat ID", value=secret_tg_chat_id or "")
+if secret_tg_token and secret_tg_chat_id:
+    st.sidebar.success("✅ Telegram credentials loaded from Streamlit secrets.")
+    st.sidebar.caption("Deep Analysis will auto-send your morning summary.")
 
 # ── CACHED MACRO ──────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -969,6 +984,10 @@ with tab8:
     2. Message your bot → `https://api.telegram.org/bot<TOKEN>/getUpdates`
     3. Copy `chat_id` → paste in sidebar
     """)
+    st.caption(
+        "You can also store credentials in Streamlit secrets using keys: "
+        "`telegram_bot_token` + `telegram_chat_id` (or `[telegram] bot_token/chat_id`)."
+    )
     msg=build_morning_message(macro_score,stance,regime,regime_conf,
                                rec_sector,allocation,plan,scores,
                                commodity_context,portfolio_value,flow_narrative)
