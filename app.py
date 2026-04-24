@@ -8,6 +8,7 @@ import mplfinance as mpf
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import engine as eng
 from engine import (
     get_macro_score, get_commodity_context,
     detect_regime, auto_threshold, get_allocation, recommend_sector,
@@ -38,6 +39,37 @@ def _safe_df(rows):
         if df[col].dtype == object:
             df[col] = df[col].astype(str)
     return df
+
+def _fallback_macro_alignment(_scores):
+    total = round(float(sum(_scores.values())), 3) if isinstance(_scores, dict) else 0.0
+    if abs(total) >= 1.0:
+        conf = "HIGH"
+    elif abs(total) >= 0.4:
+        conf = "MEDIUM"
+    else:
+        conf = "LOW"
+    return total, conf, {"daily": total, "1m": total, "ytd": total}
+
+def _fallback_trade_confidence(result, macro, sector_flow):
+    _ = sector_flow
+    comp = float(result.get("composite", 0))
+    macro_score = float(macro.get("combined", 0)) if isinstance(macro, dict) else float(macro or 0)
+    score = int(np.clip(round(((comp + 1) / 2) * 80 + ((macro_score + 1) / 2) * 20), 0, 100))
+    label = "A+" if score >= 90 else "A" if score >= 80 else "B" if score >= 70 else "C"
+    return score, label
+
+def _fallback_explain_rejection(result, checks, macro_score):
+    _ = macro_score
+    fails = [k for k, v in checks.items() if not v]
+    if fails:
+        return " | ".join(fails[:3])
+    if float(result.get("composite", 0)) <= 0.25:
+        return "Composite below threshold"
+    return "Relative ranking below selected setups"
+
+get_macro_alignment = getattr(eng, "get_macro_alignment", _fallback_macro_alignment)
+compute_trade_confidence = getattr(eng, "compute_trade_confidence", _fallback_trade_confidence)
+explain_rejection = getattr(eng, "explain_rejection", _fallback_explain_rejection)
     
 st.set_page_config(page_title="IDX Trading Dashboard — Gen 5", layout="wide")
 st.markdown("""
