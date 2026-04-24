@@ -172,7 +172,9 @@ def compute_signal_performance(signals: List[Dict]) -> Dict:
             "avg_return": "0.00%", "expectancy": "0.00%", "max_drawdown": "0.00%"
         }
 
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    # Normalize to timezone-aware UTC timestamps to avoid
+    # invalid tz-naive vs tz-aware comparisons across pandas versions.
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
     df["closed"] = df["status"].isin(["TP HIT", "SL HIT", "EXPIRED"])
     df["ret"] = pd.to_numeric(df.get("current_return_pct"), errors="coerce").fillna(0.0)
     closed = df[df["closed"]].copy().sort_values("timestamp")
@@ -180,7 +182,7 @@ def compute_signal_performance(signals: List[Dict]) -> Dict:
     def _win_rate(days=None):
         data = closed
         if days is not None:
-            cutoff = pd.Timestamp.utcnow() - pd.Timedelta(days=days)
+            cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)
             data = data[data["timestamp"] >= cutoff]
         if len(data) == 0:
             return "0.0%"
