@@ -337,6 +337,63 @@ def get_macro_score():
     else:            stance="DEFENSIVE"
     return total,stance,scores,details
 
+def get_macro_alignment(score_map, period="1mo"):
+    """
+    Build multi-horizon macro alignment:
+    - daily: current weighted macro score
+    - 1m rolling trend
+    - ytd trend
+    Returns combined score, confidence level, and per-horizon breakdown.
+    """
+    weights = {"daily": 0.5, "1m": 0.3, "ytd": 0.2}
+    horizons = {"daily": 1, "1m": 21}
+    horizon_scores = {"daily": 0.0, "1m": 0.0, "ytd": 0.0}
+
+    for name, (tickers, up_is_good) in MACRO_TICKERS.items():
+        close = _download_close(tickers, period="1y")
+        if len(close) < 30:
+            continue
+        vol_20d = max(float(close.pct_change().rolling(20).std().iloc[-1]), 0.001)
+
+        # Daily and 1-month rolling trend
+        for h_name, lb in horizons.items():
+            if len(close) > lb:
+                ret = float((close.iloc[-1] - close.iloc[-(lb + 1)]) / close.iloc[-(lb + 1)])
+                z = np.clip(ret / (vol_20d * np.sqrt(max(lb, 1))), -2, 2) / 2
+                horizon_scores[h_name] += float(z if up_is_good else -z)
+
+        # YTD trend
+        try:
+            ytd_close = close[close.index.year == pd.Timestamp.utcnow().year]
+            if len(ytd_close) >= 2:
+                ytd_ret = float((ytd_close.iloc[-1] - ytd_close.iloc[0]) / ytd_close.iloc[0])
+                z_ytd = np.clip(ytd_ret / max(vol_20d * np.sqrt(len(ytd_close)), 0.001), -2, 2) / 2
+                horizon_scores["ytd"] += float(z_ytd if up_is_good else -z_ytd)
+        except Exception:
+            pass
+
+    # Normalize by number of macro inputs
+    denom = max(len(MACRO_TICKERS), 1)
+    for k in horizon_scores:
+        horizon_scores[k] = round(float(np.clip(horizon_scores[k] / denom, -1, 1)), 3)
+
+    combined = round(
+        horizon_scores["daily"] * weights["daily"] +
+        horizon_scores["1m"] * weights["1m"] +
+        horizon_scores["ytd"] * weights["ytd"], 3
+    )
+    signs = [np.sign(horizon_scores["daily"]), np.sign(horizon_scores["1m"]), np.sign(horizon_scores["ytd"])]
+    agreement = abs(sum(signs)) / 3 if len(signs) else 0
+    mag = abs(combined)
+    if agreement >= 0.9 and mag >= 0.25:
+        conf = "HIGH"
+    elif agreement >= 0.5 and mag >= 0.10:
+        conf = "MEDIUM"
+    else:
+        conf = "LOW"
+
+    return combined, conf, horizon_scores
+
 def get_commodity_context():
     context={}
     for name,ticker in COMMODITY_TICKERS.items():
@@ -842,6 +899,64 @@ def build_score_breakdown(ticker, macro_norm, tech_s, sent_s, fund_s,
 
     return breakdown, why_triggered
 
+def compute_trade_confidence(result, macro, sector_flow):
+    """
+    Produces 0-100 confidence score + grade bucket for a trade candidate.
+    Inputs can be raw dicts from analysis and flow map.
+    """
+    comp = float(result.get("composite", 0))
+    tech = float(result.get("technical", 0))
+    sent = float(result.get("sentiment", 0))
+    fund = float(result.get("fundamental", 0))
+    macro_score = float(macro if isinstance(macro, (int, float)) else macro.get("combined", 0))
+    sector_name = ticker_to_sector.get(result.get("ticker"), "Unknown")
+    flow_score = 0.0
+    if isinstance(sector_flow, dict):
+        flow_score = float(sector_flow.get(sector_name, {}).get("score", 0))
+
+    base = (
+        np.clip((comp + 1) / 2, 0, 1) * 45 +
+        np.clip((tech + 1) / 2, 0, 1) * 20 +
+        np.clip((macro_score + 1) / 2, 0, 1) * 15 +
+        np.clip((flow_score + 5) / 10, 0, 1) * 10 +
+        np.clip((sent + 1) / 2, 0, 1) * 5 +
+        np.clip((fund + 1) / 2, 0, 1) * 5
+    )
+    score = int(round(float(np.clip(base, 0, 100))))
+    if score >= 90:
+        grade = "A+"
+    elif score >= 80:
+        grade = "A"
+    elif score >= 70:
+        grade = "B"
+    else:
+        grade = "C"
+    return score, grade
+
+def explain_rejection(result, checks, macro_score):
+    reasons = []
+    if not checks.get("Macro positive", True):
+        reasons.append("Macro mismatch / weak market backdrop")
+    if not checks.get("Technical positive", True):
+        reasons.append("Weak momentum / trend structure")
+    if not checks.get("Sentiment positive", True):
+        reasons.append("Negative or mixed news sentiment")
+    if not checks.get("Fundamentals ok", True):
+        reasons.append("Fundamental quality below threshold")
+    if not checks.get("Playbook not AVOID", True):
+        reasons.append("Playbook flagged AVOID for current regime")
+    if not checks.get("Regime allows trading", True):
+        reasons.append("Risk-off regime; capital preservation mode")
+
+    vol_score = result.get("tech_details", {}).get("Volume Score", 0)
+    if vol_score < 0:
+        reasons.append("Low volume confirmation")
+    if result.get("composite", 0) <= 0.25:
+        reasons.append("Composite score below entry threshold")
+    if not reasons:
+        reasons.append("Relative ranking too weak versus better setups")
+    return "; ".join(reasons[:3])
+
 # ═══════════════════════════════════════════════════════════
 # PLAYBOOK ENGINE
 # ═══════════════════════════════════════════════════════════
@@ -1081,7 +1196,8 @@ for _s,_t in SECTORS.items():
 def build_execution_plan(results, macro_score, regime, allocation,
                          portfolio_value, rr_ratio, raw_data,
                          high_beta_plays, threshold=0.25,
-                         screen_rows=None, risk_pct=0.01):
+                         screen_rows=None, risk_pct=0.01, sector_flow=None,
+                         macro_alignment=None):
 
     budget_map       = allocate_trades_by_sector(allocation, portfolio_value)
     sector_budgets   = budget_map["sector_budgets"]
@@ -1152,6 +1268,11 @@ def build_execution_plan(results, macro_score, regime, allocation,
             }
 
         playbook = r.get("playbook", {})
+        conf_score, conf_label = compute_trade_confidence(
+            r,
+            {"combined": macro_alignment if macro_alignment is not None else macro_score / 4},
+            sector_flow or {}
+        )
         why = (f"Macro:{r['macro']:+.2f} | Tech:{r['technical']:+.2f} | "
                f"Sent:{r['sentiment']:+.2f} | Fund:{r['fundamental']:+.2f}\n"
                f"{playbook.get('emoji','')} {playbook.get('action','')} — {playbook.get('reason','')}")
@@ -1169,6 +1290,8 @@ def build_execution_plan(results, macro_score, regime, allocation,
             "lots":sizing["lots"],"amount":sizing["amount_idr"],
             "risk":sizing.get("risk_idr","—"),"risk_pct_str":sizing.get("risk_pct","—"),
             "pct_raw":sizing["pct_raw"],
+            "confidence_score": conf_score,
+            "confidence_label": conf_label,
             "sharia":r.get("sharia",True),"high_beta":r.get("high_beta",False),
         }
         plan[trade_type].append(entry_obj)
