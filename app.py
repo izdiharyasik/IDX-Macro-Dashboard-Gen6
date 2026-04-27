@@ -127,6 +127,7 @@ def get_timing_model_signal(details, scores, flow_data, context, cpi_yoy=3.0, cr
 get_macro_alignment = getattr(eng, "get_macro_alignment", _fallback_macro_alignment)
 compute_trade_confidence = getattr(eng, "compute_trade_confidence", _fallback_trade_confidence)
 explain_rejection = getattr(eng, "explain_rejection", _fallback_explain_rejection)
+get_timing_model_signal = getattr(eng, "get_timing_model_signal", _fallback_timing_model_signal)
     
 st.set_page_config(page_title="IDX Trading Dashboard — Gen 5", layout="wide")
 st.markdown("""
