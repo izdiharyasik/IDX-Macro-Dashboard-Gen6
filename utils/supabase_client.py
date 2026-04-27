@@ -17,13 +17,6 @@ def get_supabase_client(secrets: Dict[str, Any]):
     if not url or not key:
         return None
 
-    url = str(url).strip()
-    key = str(key).strip()
-    # Supabase python client expects project base URL (without /rest/v1)
-    if "/rest/v1" in url:
-        url = url.split("/rest/v1")[0]
-    url = url.rstrip("/")
-
     try:
         return create_client(url, key)
     except Exception:
