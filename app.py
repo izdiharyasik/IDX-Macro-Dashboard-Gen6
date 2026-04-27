@@ -41,6 +41,35 @@ from signal_tracker import (
     register_signals_from_plan, update_signal_statuses, compute_signal_performance,
 )
 
+_orig_line_chart = st.line_chart
+
+def _safe_line_chart(data=None, *args, **kwargs):
+    try:
+        if isinstance(data, pd.DataFrame):
+            safe_df = data.copy()
+            if isinstance(safe_df.columns, pd.MultiIndex):
+                safe_df.columns = safe_df.columns.get_level_values(0)
+            safe_df.columns = [str(c) for c in safe_df.columns]
+            return _orig_line_chart(safe_df, *args, **kwargs)
+        return _orig_line_chart(data, *args, **kwargs)
+    except Exception as exc:
+        st.warning(f"line_chart fallback engaged: {exc}")
+        if isinstance(data, pd.DataFrame) and not data.empty:
+            fig, ax = plt.subplots(figsize=(8, 2.4))
+            for col in data.columns[:2]:
+                try:
+                    y = pd.Series(data[col]).astype(float).values
+                    ax.plot(range(len(y)), y, label=str(col))
+                except Exception:
+                    continue
+            ax.legend(loc="upper left", fontsize=8)
+            ax.grid(alpha=0.2)
+            st.pyplot(fig)
+            plt.close(fig)
+        return None
+
+st.line_chart = _safe_line_chart
+
 def _safe_df(rows):
     """Convert all values to strings to prevent Arrow type errors."""
     df = pd.DataFrame(rows)
