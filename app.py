@@ -67,9 +67,18 @@ def _fallback_explain_rejection(result, checks, macro_score):
         return "Composite below threshold"
     return "Relative ranking below selected setups"
 
+def _fallback_timing_model_signal(*args, **kwargs):
+    _ = args, kwargs
+    return {
+        "signal": "NEUTRAL",
+        "score": 0.0,
+        "explanation": "Timing model unavailable in current engine build; using neutral fallback.",
+    }
+
 get_macro_alignment = getattr(eng, "get_macro_alignment", _fallback_macro_alignment)
 compute_trade_confidence = getattr(eng, "compute_trade_confidence", _fallback_trade_confidence)
 explain_rejection = getattr(eng, "explain_rejection", _fallback_explain_rejection)
+get_timing_model_signal = getattr(eng, "get_timing_model_signal", _fallback_timing_model_signal)
     
 st.set_page_config(page_title="IDX Trading Dashboard — Gen 5", layout="wide")
 st.markdown("""
@@ -311,7 +320,7 @@ if flow_data:
     ]).sort_values("Score",ascending=False)
     st.dataframe(
         flow_df.style.background_gradient(subset=["Score"],cmap="RdYlGn"),
-        use_container_width=True
+        width="stretch"
     )
 
 # Sector action translator
@@ -371,7 +380,7 @@ st.dataframe(
     disp.head(top_n)[["ticker","price","momentum","rsi","vol_ratio",
                        "52w_prox","20d_return","vs_ihsg","beta","☪️","🚀"]]
     .style.background_gradient(subset=["momentum"],cmap="RdYlGn"),
-    use_container_width=True
+    width="stretch"
 )
 
 if hb_plays:
@@ -380,10 +389,11 @@ if hb_plays:
     hb_df["☪️"]=hb_df["sharia"].apply(lambda x:"☪️" if x else "")
     st.dataframe(hb_df[["ticker","beta_score","price","vol_ratio","5d_mom","adr","rsi","☪️"]]
                  .style.background_gradient(subset=["beta_score"],cmap="Oranges"),
-                 use_container_width=True)
+                 width="stretch")
 
 if sharia_only: top_candidates=[t for t in top_candidates if SHARIA_COMPLIANT.get(t,True)]
-custom=st.multiselect("Override candidates:",options=scan_universe,default=top_candidates)
+default_candidates = [t for t in top_candidates if t in scan_universe]
+custom=st.multiselect("Override candidates:",options=scan_universe,default=default_candidates)
 final_candidates=custom if custom else top_candidates
 if sharia_only: final_candidates=[t for t in final_candidates if SHARIA_COMPLIANT.get(t,True)]
 
@@ -620,7 +630,7 @@ with tab2:
         st.dataframe(
             display_df.style.background_gradient(
                 subset=["⚡ Composite","📈 Technical","📰 Sentiment","🏗 Fundamental"],cmap="RdYlGn"),
-            use_container_width=True)
+            width="stretch")
     else:
         st.info("No setups match the selected confidence filters.")
 
@@ -838,7 +848,7 @@ with tab5:
     # Active trades
     st.subheader(f"✅ Active Trades — {len(active_rows)}")
     if active_rows:
-        st.dataframe(_safe_df(active_rows), use_container_width=True)
+        st.dataframe(_safe_df(active_rows), width="stretch")
     else:
         st.warning("No stocks passed checklist today. Sit on hands 🙌")
 
@@ -863,7 +873,7 @@ with tab5:
             st.dataframe(
                 pd.DataFrame(watch_rows)[["Ticker","Type","Action","Score","Entry","SL","TP","Why not"]]
                 .style.background_gradient(subset=["Score"], cmap="RdYlGn"),
-                use_container_width=True
+                width="stretch"
             )
 
 # ── TAB 6: JOURNAL ────────────────────────────────────────
@@ -920,7 +930,7 @@ with tab6:
             jdf[["id","date","ticker","trade_type","regime","composite",
                  "entry_price","exit_price","pnl_pct","result","status"]]
             .style.background_gradient(subset=["pnl_pct"],cmap="RdYlGn"),
-            use_container_width=True
+            width="stretch"
         )
         # PnL chart
         closed=jdf[jdf["status"]=="CLOSED"].copy()
@@ -990,7 +1000,7 @@ with tab7:
                     trades_df[["ticker","trade_type","entry_date","exit_date",
                                "entry_px","exit_px","return_net","win"]]
                     .style.background_gradient(subset=["return_net"],cmap="RdYlGn"),
-                    use_container_width=True)
+                    width="stretch")
 
 # ── TAB 8: TELEGRAM ─────────────────────────────────────
 with tab8:
@@ -1019,7 +1029,7 @@ with tab8:
 
     preview_img = st.session_state.get("telegram_preview_img")
     if preview_img:
-        st.image(preview_img, caption="Telegram brief image preview", use_container_width=True)
+        st.image(preview_img, caption="Telegram brief image preview", width="stretch")
     else:
         st.caption("Click **Generate Image Preview** to render the latest briefing image.")
 
@@ -1057,7 +1067,7 @@ with tab9:
                     
                     st.dataframe(
                         fvg_results.style.format({"Size": "{:.0f}", "Price": "Rp {:,.0f}"}),
-                        use_container_width=True
+                        width="stretch"
                     )
                 else:
                     st.info("No fresh Fair Value Gaps detected on the daily timeframe today. Market is balanced.")
@@ -1069,7 +1079,7 @@ with tab9:
             st.dataframe(
                 cached_fvg.sort_values(by="Size", ascending=False).reset_index(drop=True)
                 .style.format({"Size": "{:.0f}", "Price": "Rp {:,.0f}"}),
-                use_container_width=True
+                width="stretch"
             )
 
 with tab10:
@@ -1099,7 +1109,7 @@ with tab10:
                 "current_price","current_return_pct","days_since_signal",
                 "effective_confidence","status"
             ]],
-            use_container_width=True
+            width="stretch"
         )
         active_tape = sdf[sdf["status"].str.contains("ACTIVE", na=False)].head(12)
         if not active_tape.empty:
