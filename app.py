@@ -44,6 +44,7 @@ from signal_tracker import (
 if not hasattr(st, "_orig_line_chart_fn"):
     st._orig_line_chart_fn = st.line_chart
 _orig_line_chart = st._orig_line_chart_fn
+_orig_line_chart = st.line_chart
 
 def _safe_line_chart(data=None, *args, **kwargs):
     try:
@@ -72,6 +73,7 @@ def _safe_line_chart(data=None, *args, **kwargs):
 
 if st.line_chart is not _safe_line_chart:
     st.line_chart = _safe_line_chart
+st.line_chart = _safe_line_chart
 
 def _safe_df(rows):
     """Convert all values to strings to prevent Arrow type errors."""
@@ -156,6 +158,7 @@ def _fallback_timing_model_signal(*args, **kwargs):
 get_macro_alignment = getattr(eng, "get_macro_alignment", _fallback_macro_alignment)
 compute_trade_confidence = getattr(eng, "compute_trade_confidence", _fallback_trade_confidence)
 explain_rejection = getattr(eng, "explain_rejection", _fallback_explain_rejection)
+get_timing_model_signal = getattr(eng, "get_timing_model_signal", _fallback_timing_model_signal)
     
 st.set_page_config(page_title="IDX Trading Dashboard — Gen 5", layout="wide")
 st.markdown("""
