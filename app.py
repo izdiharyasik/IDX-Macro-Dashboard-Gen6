@@ -41,6 +41,9 @@ from signal_tracker import (
     register_signals_from_plan, update_signal_statuses, compute_signal_performance,
 )
 
+if not hasattr(st, "_orig_line_chart_fn"):
+    st._orig_line_chart_fn = st.line_chart
+_orig_line_chart = st._orig_line_chart_fn
 _orig_line_chart = st.line_chart
 
 def _safe_line_chart(data=None, *args, **kwargs):
@@ -68,6 +71,8 @@ def _safe_line_chart(data=None, *args, **kwargs):
             plt.close(fig)
         return None
 
+if st.line_chart is not _safe_line_chart:
+    st.line_chart = _safe_line_chart
 st.line_chart = _safe_line_chart
 
 def _safe_df(rows):
