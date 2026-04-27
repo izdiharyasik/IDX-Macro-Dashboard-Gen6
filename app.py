@@ -125,8 +125,30 @@ def get_timing_model_signal(details, scores, flow_data, context, cpi_yoy=3.0, cr
     return {"signal": signal, "confidence": confidence, "reason": reason}
 
 def _fallback_timing_model_signal(*args, **kwargs):
-    """Backwards-compatible alias used by older merge paths."""
-    return get_timing_model_signal(*args, **kwargs)
+    """Backwards-compatible fallback used by older merge paths."""
+    _details = args[0] if len(args) > 0 else {}
+    _scores = args[1] if len(args) > 1 else {}
+    _flow_data = args[2] if len(args) > 2 else {}
+    _context = args[3] if len(args) > 3 else None
+    _ = _details, _scores, _flow_data, _context
+    cpi_yoy = kwargs.get("cpi_yoy", 3.0)
+    credit_spread = kwargs.get("credit_spread", 4.0)
+    signal = "NEUTRAL"
+    confidence = "MEDIUM"
+    reason = "Macro conditions are mixed"
+    if float(credit_spread or 0) > 8.0:
+        signal = "CAUTION"
+        confidence = "HIGH"
+        reason = "Credit spread elevated"
+    elif float(cpi_yoy or 0) > 3.5:
+        signal = "CAUTION"
+        confidence = "MEDIUM"
+        reason = "Inflation too high for Fed to act"
+    elif float(credit_spread or 0) < 5.0 and float(cpi_yoy or 0) < 3.0:
+        signal = "BUY"
+        confidence = "HIGH"
+        reason = "Credit spread and inflation are supportive"
+    return {"signal": signal, "confidence": confidence, "reason": reason}
 
 get_macro_alignment = getattr(eng, "get_macro_alignment", _fallback_macro_alignment)
 compute_trade_confidence = getattr(eng, "compute_trade_confidence", _fallback_trade_confidence)
