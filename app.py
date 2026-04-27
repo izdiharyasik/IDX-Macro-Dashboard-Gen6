@@ -105,12 +105,7 @@ st.title("📊 IDX Macro Trading Dashboard — Gen 7")
 @st.cache_data(ttl=900, show_spinner=False)
 def load_yf_data(symbol, period="6mo", interval="1d"):
     try:
-        df = yf.download(symbol, period=period, interval=interval, auto_adjust=True, progress=False)
-        if isinstance(df.columns, pd.MultiIndex):
-            # yfinance may return MultiIndex columns even for a single ticker.
-            # Keep the first level (Open/High/Low/Close/Volume) for Streamlit chart compatibility.
-            df.columns = df.columns.get_level_values(0)
-        return df
+        return yf.download(symbol, period=period, interval=interval, auto_adjust=True, progress=False)
     except Exception:
         return pd.DataFrame()
 
@@ -326,14 +321,10 @@ macro_c1.metric("IHSG Regime Gate", ihsg_regime)
 macro_c2.metric("VIX Alarm", f"{vix_now:.2f}", vix_bucket)
 macro_c3.metric("Operating Mode", mode_payload["mode"], mode_payload["risk_guidance"])
 
-if (not ihsg_df.empty) and ("Close" in ihsg_df.columns):
-    ihsg_close_series = ihsg_df["Close"].astype(float)
-    spark = pd.DataFrame({
-        "Close": ihsg_close_series.tail(30),
-        "EMA50": ihsg_close_series.ewm(span=50, adjust=False).mean().tail(30),
-    }).dropna()
-    if not spark.empty:
-        st.line_chart(spark, height=180)
+if not ihsg_df.empty:
+    spark = ihsg_df[["Close"]].tail(30).copy()
+    spark["EMA50"] = ihsg_df["Close"].ewm(span=50, adjust=False).mean().tail(30).values
+    st.line_chart(spark, height=180)
 
 fred_cols = st.columns(4)
 fred_cols[0].metric("HY Credit Spread", f"{float(credit_spread_input or 0):.2f}%", parse_change_arrow(fred_bundle.get("hy_spread", [])))
