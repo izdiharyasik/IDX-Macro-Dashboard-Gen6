@@ -18,6 +18,7 @@ from engine import (
     trade_checklist, risk_based_sizing, get_trade_setup,
     build_morning_message, generate_brief_image,
     scan_market_for_fvg,
+    get_macro_alignment, compute_trade_confidence, explain_rejection,
     send_telegram, send_telegram_photo,
     resolve_universe,
     SECTORS, IDX_UNIVERSE, TRADE_TYPES, REGIME_COLORS,
@@ -28,8 +29,7 @@ from trade_journal import (
     get_learned_weights, get_journal_df, get_journal_stats, get_open_trades,
 )
 from signal_tracker import (
-    register_signals_from_plan, register_signals_from_journal,
-    update_signal_statuses, compute_signal_performance,
+    register_signals_from_plan, update_signal_statuses, compute_signal_performance,
 )
 
 def _safe_df(rows):
@@ -1057,13 +1057,6 @@ with tab9:
 
 with tab10:
     st.subheader("📡 Signal Tracker")
-    jdf_for_import = get_journal_df()
-    if st.button("🔗 Import logged trades from Journal", key="import_journal_to_signals"):
-        imported = register_signals_from_journal(jdf_for_import.to_dict("records") if not jdf_for_import.empty else [])
-        if imported:
-            st.success(f"Imported {imported} journal trade(s) into signal history.")
-        else:
-            st.info("No new journal trades to import.")
     all_signals = update_signal_statuses()
     perf = compute_signal_performance(all_signals)
     mc1, mc2, mc3, mc4 = st.columns(4)
@@ -1077,8 +1070,6 @@ with tab10:
 
     if all_signals:
         sdf = pd.DataFrame(all_signals).sort_values("timestamp", ascending=False)
-        sdf["source"] = sdf.get("source", "PLAN")
-        sdf["ts_date"] = pd.to_datetime(sdf["timestamp"], errors="coerce").dt.date
         sdf["age_decay"] = sdf["days_since_signal"].apply(lambda d: max(0, min(25, d * 2)))
         sdf["effective_confidence"] = (
             pd.to_numeric(sdf.get("initial_confidence"), errors="coerce").fillna(0) - sdf["age_decay"]
@@ -1089,39 +1080,10 @@ with tab10:
             sdf[[
                 "ticker","entry","stop_loss","take_profit","timestamp","expiry_date",
                 "current_price","current_return_pct","days_since_signal",
-                "effective_confidence","source","status"
+                "effective_confidence","status"
             ]],
             use_container_width=True
         )
-        today_date = pd.Timestamp.utcnow().date()
-        today_df = sdf[sdf["ts_date"] == today_date]
-        old_df = sdf[sdf["ts_date"] < today_date]
-        t1, t2, t3, t4 = st.columns(4)
-        t1.metric("Today's Signals", int(len(today_df)))
-        t2.metric("Today's Avg Return", f"{pd.to_numeric(today_df.get('current_return_pct'), errors='coerce').mean():.2f}%"
-                  if len(today_df) else "0.00%")
-        t3.metric("Historical Signals", int(len(old_df)))
-        t4.metric("Historical Avg Return", f"{pd.to_numeric(old_df.get('current_return_pct'), errors='coerce').mean():.2f}%"
-                  if len(old_df) else "0.00%")
-
-        with st.expander("🕒 Status Change History"):
-            hist_rows = []
-            for s in all_signals:
-                for ev in s.get("status_history", []):
-                    hist_rows.append({
-                        "ticker": s.get("ticker"),
-                        "source": s.get("source", "PLAN"),
-                        "event_time": ev.get("timestamp"),
-                        "status": ev.get("status"),
-                        "price": ev.get("price"),
-                        "return_pct": ev.get("return_pct"),
-                        "note": ev.get("note"),
-                    })
-            if hist_rows:
-                hdf = pd.DataFrame(hist_rows).sort_values("event_time", ascending=False)
-                st.dataframe(hdf, use_container_width=True)
-            else:
-                st.caption("No status history recorded yet.")
         active_tape = sdf[sdf["status"].str.contains("ACTIVE", na=False)].head(12)
         if not active_tape.empty:
             tape = " | ".join([

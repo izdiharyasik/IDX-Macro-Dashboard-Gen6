@@ -59,15 +59,12 @@ def register_signals_from_plan(plan: Dict):
                 "take_profit": _safe_float(t.get("take_profit", 0)),
                 "timestamp": _now_iso(),
                 "expiry_date": expiry,
-                "source": "PLAN",
                 "initial_confidence": float(t.get("confidence_score", 0)),
                 "confidence_label": t.get("confidence_label", "C"),
                 "status": "ACTIVE",
                 "current_price": None,
                 "current_return_pct": None,
                 "days_since_signal": 0,
-                "status_history": [{"timestamp": _now_iso(), "status": "ACTIVE", "note": "Created from execution plan"}],
-                "last_snapshot_date": None,
             }
 
             duplicate_active = any(
@@ -83,69 +80,6 @@ def register_signals_from_plan(plan: Dict):
             if key not in existing:
                 db["signals"].append(sig)
                 created += 1
-
-    if created:
-        save_signals(db)
-    return created
-
-def register_signals_from_journal(journal_rows: List[Dict]):
-    """
-    Optional bridge: import logged journal trades into signal tracker history.
-    """
-    db = load_signals()
-    created = 0
-
-    for row in journal_rows or []:
-        ticker = row.get("ticker")
-        if not ticker:
-            continue
-        entry = _safe_float(row.get("entry_price", 0))
-        if entry <= 0:
-            continue
-        ts = str(row.get("date") or _now_iso())
-        status_raw = str(row.get("status", "OPEN")).upper()
-        result_raw = str(row.get("result", "")).upper()
-        if status_raw == "CLOSED":
-            mapped_status = "TP HIT" if result_raw == "WIN" else "SL HIT" if result_raw == "LOSS" else "EXPIRED"
-        elif status_raw == "EXPIRED":
-            mapped_status = "EXPIRED"
-        else:
-            mapped_status = "ACTIVE"
-
-        duplicate = any(
-            s.get("source") == "JOURNAL"
-            and s.get("ticker") == ticker
-            and abs(_safe_float(s.get("entry", 0)) - entry) < 1e-9
-            and str(s.get("timestamp", ""))[:10] == ts[:10]
-            for s in db.get("signals", [])
-        )
-        if duplicate:
-            continue
-
-        pnl_pct = pd.to_numeric(row.get("pnl_pct"), errors="coerce")
-        sig = {
-            "ticker": ticker,
-            "entry": entry,
-            "stop_loss": _safe_float(row.get("stop_loss", 0)),
-            "take_profit": _safe_float(row.get("take_profit", 0)),
-            "timestamp": ts if "T" in ts else f"{ts}T00:00:00",
-            "expiry_date": row.get("expiry_date"),
-            "source": "JOURNAL",
-            "initial_confidence": float(np.clip(_safe_float(row.get("composite", 0)) * 50 + 50, 0, 100)),
-            "confidence_label": "N/A",
-            "status": mapped_status,
-            "current_price": _safe_float(row.get("exit_price", 0)) if pd.notna(row.get("exit_price")) else None,
-            "current_return_pct": float(pnl_pct) if pd.notna(pnl_pct) else None,
-            "days_since_signal": 0,
-            "status_history": [{
-                "timestamp": _now_iso(),
-                "status": mapped_status,
-                "note": f"Imported from journal trade #{row.get('id', '?')}"
-            }],
-            "last_snapshot_date": None,
-        }
-        db["signals"].append(sig)
-        created += 1
 
     if created:
         save_signals(db)
@@ -185,9 +119,6 @@ def update_signal_statuses() -> List[Dict]:
     today = date.today()
 
     for s in signals:
-        s.setdefault("status_history", [])
-        s.setdefault("source", "PLAN")
-        s.setdefault("last_snapshot_date", None)
         ts_raw = s.get("timestamp")
         try:
             ts_date = datetime.fromisoformat(ts_raw).date() if ts_raw else today
@@ -203,9 +134,7 @@ def update_signal_statuses() -> List[Dict]:
             if entry > 0:
                 s["current_return_pct"] = round((px - entry) / entry * 100, 2)
 
-        old_status = s.get("status", "ACTIVE")
-        new_status = old_status
-        if old_status not in ("TP HIT", "SL HIT", "EXPIRED"):
+        if s.get("status") not in ("TP HIT", "SL HIT", "EXPIRED"):
             try:
                 exp = datetime.strptime(s.get("expiry_date", ""), "%Y-%m-%d").date()
             except Exception:
@@ -217,34 +146,13 @@ def update_signal_statuses() -> List[Dict]:
             cur = s.get("current_price")
 
             if today > exp:
-                new_status = "EXPIRED"
+                s["status"] = "EXPIRED"
             elif cur is not None and tp > 0 and cur >= tp:
-                new_status = "TP HIT"
+                s["status"] = "TP HIT"
             elif cur is not None and sl > 0 and cur <= sl:
-                new_status = "SL HIT"
+                s["status"] = "SL HIT"
             else:
-                new_status = "ACTIVE"
-        s["status"] = new_status
-
-        if new_status != old_status:
-            s["status_history"].append({
-                "timestamp": _now_iso(),
-                "status": new_status,
-                "price": s.get("current_price"),
-                "return_pct": s.get("current_return_pct"),
-                "note": f"Status changed {old_status} → {new_status}",
-            })
-
-        snapshot_date = s.get("last_snapshot_date")
-        if snapshot_date != str(today):
-            s["status_history"].append({
-                "timestamp": _now_iso(),
-                "status": s.get("status"),
-                "price": s.get("current_price"),
-                "return_pct": s.get("current_return_pct"),
-                "note": "Daily snapshot",
-            })
-            s["last_snapshot_date"] = str(today)
+                s["status"] = "ACTIVE"
 
     save_signals(db)
     return signals
