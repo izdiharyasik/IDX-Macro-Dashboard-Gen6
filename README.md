@@ -37,6 +37,22 @@ telegram_chat_id = "123456789"
 Supported aliases in app:
 - Telegram: `telegram_bot_token` / `TG_BOT_TOKEN`, `telegram_chat_id` / `TG_CHAT_ID`
 - Supabase: `SUPABASE_URL`/`supabase_url`, `SUPABASE_KEY`/`supabase_key`
+- FRED: `FRED_API_KEY` / `fred_api_key`
+
+Nested sections are also supported:
+
+```toml
+[supabase]
+url = "https://xxxx.supabase.co"
+key = "your_supabase_key"
+
+[fred]
+api_key = "your_fred_key"
+
+[telegram]
+bot_token = "123:abc"
+chat_id = "123456789"
+```
 
 ## How to use (simple)
 
