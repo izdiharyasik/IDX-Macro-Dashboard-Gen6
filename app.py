@@ -8,6 +8,7 @@ import mplfinance as mpf
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import engine as eng
 from engine import (
     get_macro_score, get_commodity_context,
     detect_regime, auto_threshold, get_allocation, recommend_sector,
@@ -26,6 +27,10 @@ from trade_journal import (
     load_journal, log_trade, close_trade, expire_stale_trades,
     get_learned_weights, get_journal_df, get_journal_stats, get_open_trades,
 )
+from signal_tracker import (
+    register_signals_from_plan, register_signals_from_journal,
+    update_signal_statuses, compute_signal_performance,
+)
 
 def _safe_df(rows):
     """Convert all values to strings to prevent Arrow type errors."""
@@ -34,8 +39,67 @@ def _safe_df(rows):
         if df[col].dtype == object:
             df[col] = df[col].astype(str)
     return df
+
+def _fallback_macro_alignment(_scores):
+    total = round(float(sum(_scores.values())), 3) if isinstance(_scores, dict) else 0.0
+    if abs(total) >= 1.0:
+        conf = "HIGH"
+    elif abs(total) >= 0.4:
+        conf = "MEDIUM"
+    else:
+        conf = "LOW"
+    return total, conf, {"daily": total, "1m": total, "ytd": total}
+
+def _fallback_trade_confidence(result, macro, sector_flow):
+    _ = sector_flow
+    comp = float(result.get("composite", 0))
+    macro_score = float(macro.get("combined", 0)) if isinstance(macro, dict) else float(macro or 0)
+    score = int(np.clip(round(((comp + 1) / 2) * 80 + ((macro_score + 1) / 2) * 20), 0, 100))
+    label = "A+" if score >= 90 else "A" if score >= 80 else "B" if score >= 70 else "C"
+    return score, label
+
+def _fallback_explain_rejection(result, checks, macro_score):
+    _ = macro_score
+    fails = [k for k, v in checks.items() if not v]
+    if fails:
+        return " | ".join(fails[:3])
+    if float(result.get("composite", 0)) <= 0.25:
+        return "Composite below threshold"
+    return "Relative ranking below selected setups"
+
+def _fallback_timing_model(details, scores, flow_data=None, results=None,
+                           cpi_yoy=3.3, credit_spread=4.0, accounting_risk=False):
+    _ = (flow_data, results, cpi_yoy, credit_spread, accounting_risk)
+    vix = float(str(details.get("VIX", {}).get("value", "0")).replace(",", "") or 0)
+    boxes = {
+        "VIX Panic (>30)": vix >= 30,
+        "Fed Not Hiking (proxy)": scores.get("US10Y", 0) > -0.25,
+        "Deleveraging (proxy)": scores.get("Nasdaq", 0) < 0,
+        "Leading Sector Present": False,
+        "Leader Earnings Healthy (proxy)": True,
+    }
+    passed = sum(1 for v in boxes.values() if v)
+    prob = int((passed / 5.0) * 82)
+    signal = "BUY WINDOW" if passed >= 4 else "WATCH / STAGGERED BUY" if passed >= 3 else "NO-GO / WAIT"
+    return {"signal": signal, "probability": prob, "boxes": boxes, "passed": passed,
+            "trap_flags": {}, "lead_sector": "N/A", "lead_score": 0.0, "avg_fundamental_proxy": 0.0}
+
+get_macro_alignment = getattr(eng, "get_macro_alignment", _fallback_macro_alignment)
+compute_trade_confidence = getattr(eng, "compute_trade_confidence", _fallback_trade_confidence)
+explain_rejection = getattr(eng, "explain_rejection", _fallback_explain_rejection)
+get_timing_model_signal = getattr(eng, "get_timing_model_signal", _fallback_timing_model)
     
 st.set_page_config(page_title="IDX Trading Dashboard — Gen 5", layout="wide")
+st.markdown("""
+<style>
+.stApp { background-color: #0f1117; color: #e6e6e6; }
+[data-testid="stMetricValue"], [data-testid="stMetricDelta"], .stDataFrame, table {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+.orange-accent { color: #FF9900; font-weight: 700; }
+.stTabs [role="tab"] { padding: 0.35rem 0.7rem; }
+</style>
+""", unsafe_allow_html=True)
 st.title("📊 IDX Macro Trading Dashboard — Gen 5")
 
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
@@ -78,6 +142,11 @@ elif selected_universe == "All":
 st.sidebar.divider()
 st.sidebar.subheader("🎚️ Threshold")
 use_auto = st.sidebar.checkbox("Use auto threshold", value=True)
+st.sidebar.divider()
+st.sidebar.subheader("🧭 Timing Model (Video Ref)")
+cpi_yoy_input = st.sidebar.number_input("US CPI YoY (%)", min_value=0.0, max_value=15.0, value=3.3, step=0.1)
+credit_spread_input = st.sidebar.number_input("HY Credit Spread (%)", min_value=0.0, max_value=25.0, value=4.0, step=0.1)
+accounting_risk_input = st.sidebar.checkbox("Accounting trust risk", value=False)
 
 st.sidebar.divider()
 st.sidebar.subheader("🧠 Learning Weights")
@@ -92,8 +161,23 @@ active_weights = learned_weights if (use_learned and journal_stats) else DEFAULT
 
 st.sidebar.divider()
 st.sidebar.subheader("📱 Telegram")
-tg_token   = st.sidebar.text_input("Bot Token",  type="password")
-tg_chat_id = st.sidebar.text_input("Chat ID")
+secret_tg_token = (
+    st.secrets.get("telegram_bot_token")
+    or st.secrets.get("TG_BOT_TOKEN")
+    or st.secrets.get("bot_token")
+    or st.secrets.get("telegram", {}).get("bot_token")
+)
+secret_tg_chat_id = (
+    st.secrets.get("telegram_chat_id")
+    or st.secrets.get("TG_CHAT_ID")
+    or st.secrets.get("chat_id")
+    or st.secrets.get("telegram", {}).get("chat_id")
+)
+tg_token   = st.sidebar.text_input("Bot Token",  type="password", value=secret_tg_token or "")
+tg_chat_id = st.sidebar.text_input("Chat ID", value=secret_tg_chat_id or "")
+if secret_tg_token and secret_tg_chat_id:
+    st.sidebar.success("✅ Telegram credentials loaded from Streamlit secrets.")
+    st.sidebar.caption("Deep Analysis will auto-send your morning summary.")
 
 # ── CACHED MACRO ──────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -106,6 +190,7 @@ def load_commodities(): return get_commodity_context()
 def load_money_flow():  return get_money_flow()
 
 macro_score, stance, scores, details = load_macro()
+macro_alignment_score, macro_conf_level, macro_breakdown = get_macro_alignment(scores)
 commodity_context                    = load_commodities()
 regime, regime_conf, regime_reason   = detect_regime(scores, details, commodity_context)
 allocation                           = get_allocation(regime, macro_score)
@@ -115,6 +200,12 @@ smart_threshold                      = auto_threshold(regime, macro_score)
 threshold = smart_threshold if use_auto else st.sidebar.slider(
     "Manual threshold", 0.10, 0.60, smart_threshold, 0.05)
 budget_map  = allocate_trades_by_sector(allocation, portfolio_value, high_beta_pct)
+timing_model = get_timing_model_signal(
+    details, scores, {}, None,
+    cpi_yoy=cpi_yoy_input,
+    credit_spread=credit_spread_input,
+    accounting_risk=accounting_risk_input,
+)
 
 # Auto-expire stale trades
 expired = expire_stale_trades()
@@ -156,6 +247,27 @@ with st.expander("🌍 Macro Recap + Interpretation", expanded=True):
         st.markdown(f"**Today:** Focus **{rec_sector}** — {rec_reason}")
         st.caption(f"Threshold: **{threshold}** ({'auto' if use_auto else 'manual'}) | "
                    f"Risk/trade: **{risk_pct_input*100:.1f}%**")
+        st.markdown(
+            f"<span class='orange-accent'>Macro Alignment Score:</span> {macro_alignment_score:+.2f} | "
+            f"<span class='orange-accent'>Confidence:</span> {macro_conf_level}",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"Breakdown — Daily: {macro_breakdown.get('daily',0):+.2f} | "
+            f"1M: {macro_breakdown.get('1m',0):+.2f} | YTD: {macro_breakdown.get('ytd',0):+.2f}"
+        )
+        st.divider()
+        st.markdown("**5-Box Timing Model (from shared transcript):**")
+        st.caption(
+            f"Signal: **{timing_model.get('signal','N/A')}** | "
+            f"Probability: **{timing_model.get('probability',0)}%**"
+        )
+        for k, v in timing_model.get("boxes", {}).items():
+            st.write(f"{'✅' if v else '❌'} {k}")
+        if timing_model.get("trap_flags"):
+            st.caption("Trap filters:")
+            for k, v in timing_model.get("trap_flags", {}).items():
+                st.write(f"{'⚠️' if v else '✅'} {k}")
 
 cols=st.columns(5)
 for i,name in enumerate(["Nasdaq","DXY","US10Y","VIX"]):
@@ -187,6 +299,12 @@ with st.spinner("Loading sector money flow..."):
         flow_data, top_sector, bot_sector, flow_narrative = load_money_flow()
     except:
         flow_data, top_sector, bot_sector, flow_narrative = {}, rec_sector, "", "Flow data unavailable."
+timing_model = get_timing_model_signal(
+    details, scores, flow_data, None,
+    cpi_yoy=cpi_yoy_input,
+    credit_spread=credit_spread_input,
+    accounting_risk=accounting_risk_input,
+)
 
 cl,cr=st.columns([1,1])
 with cl:
@@ -331,7 +449,11 @@ if st.button(f"⚡ Run Deep Analysis on {len(final_candidates)} stocks"):
                                    raw_data,all_scores,active_weights)
         plan=build_execution_plan(results,macro_score,regime,allocation,
                                    portfolio_value,rr_ratio,raw_data,
-                                   hb_plays,threshold,all_scores,risk_pct_input)
+                                   hb_plays,threshold,all_scores,risk_pct_input,
+                                   flow_data,macro_alignment_score)
+        created_signals = register_signals_from_plan(plan)
+        if created_signals:
+            st.success(f"📡 Signal tracker updated: {created_signals} new signal(s) persisted.")
         fvg_results = scan_market_for_fvg(raw_data) if raw_data else pd.DataFrame()
         analysis_inputs = {
             "portfolio_value": portfolio_value,
@@ -390,9 +512,9 @@ analysis_risk_pct_input = saved_inputs.get("risk_pct_input", risk_pct_input)
 # ═══════════════════════════════════════════════════════════
 # TABS
 # ═══════════════════════════════════════════════════════════
-tab1,tab2,tab3,tab4,tab5,tab6,tab7,tab8,tab9=st.tabs([
+tab1,tab2,tab3,tab4,tab5,tab6,tab7,tab8,tab9,tab10=st.tabs([
     "🎯 Execution Plan","📊 Rankings","🕯 Chart + Playbook",
-    "✅ Checklist","💰 Sizing","📖 Journal","📈 Backtest","📱 Telegram", "🧲 FVG Scanner"
+    "✅ Checklist","💰 Sizing","📖 Journal","📈 Backtest","📱 Telegram", "🧲 FVG Scanner", "📡 Signal Tracker"
 ])
 # ── TAB 1: EXECUTION PLAN ─────────────────────────────────
 with tab1:
@@ -454,6 +576,9 @@ with tab1:
                 c3.metric("Take Profit",t["take_profit"])
                 c4.metric("Hold",       f"{t['hold_days']}d")
                 c5.metric("Expiry",     t.get("order_expiry",""))
+                cc1,cc2 = st.columns(2)
+                cc1.metric("Confidence", f"{t.get('confidence_score',0)} / 100")
+                cc2.metric("Grade", t.get("confidence_label", "C"))
                 st.info(f"📋 **Strategy:** {t['strategy']}")
                 st.caption(f"**Why:** {t['why']}")
                 st.caption(f"**Risk:** {t.get('risk','')} ({t.get('risk_pct_str','')})")
@@ -497,19 +622,37 @@ with tab1:
 # ── TAB 2: RANKINGS ──────────────────────────────────────
 with tab2:
     filtered=results if not sharia_only else [r for r in results if r.get("sharia",True)]
+    show_aplus = st.checkbox("Show only A+ setups", value=False)
+    min_conf = st.slider("Show only signals with confidence > X", 0, 100, 70, 5)
+    scored_filtered = []
+    for r in filtered:
+        conf_score, conf_label = compute_trade_confidence(r, {"combined": macro_alignment_score}, flow_data)
+        if show_aplus and conf_label != "A+":
+            continue
+        if conf_score < min_conf:
+            continue
+        r2 = dict(r)
+        r2["confidence_score"] = conf_score
+        r2["confidence_label"] = conf_label
+        scored_filtered.append(r2)
+    filtered = scored_filtered
     display_df=pd.DataFrame([{
         "Ticker":r["ticker"],"☪️":"☪️" if r.get("sharia") else "",
         "🚀":"🚀" if r.get("high_beta") else "",
         "Type":f"{TRADE_TYPES.get(r['trade_type'],{}).get('emoji','?')} {r['trade_type']}",
         "Playbook":f"{r.get('playbook',{}).get('emoji','')} {r.get('playbook',{}).get('action','')}",
         "Why":r.get("why_triggered",""),
+        "🎓 Conf":f"{r.get('confidence_score',0)} ({r.get('confidence_label','C')})",
         "⚡ Composite":r["composite"],"📈 Technical":r["technical"],
         "📰 Sentiment":r["sentiment"],"🏗 Fundamental":r["fundamental"],
     } for r in filtered])
-    st.dataframe(
-        display_df.style.background_gradient(
-            subset=["⚡ Composite","📈 Technical","📰 Sentiment","🏗 Fundamental"],cmap="RdYlGn"),
-        use_container_width=True)
+    if not display_df.empty:
+        st.dataframe(
+            display_df.style.background_gradient(
+                subset=["⚡ Composite","📈 Technical","📰 Sentiment","🏗 Fundamental"],cmap="RdYlGn"),
+            use_container_width=True)
+    else:
+        st.info("No setups match the selected confidence filters.")
 
     fig,ax=plt.subplots(figsize=(12,4))
     tlist=[r["ticker"] for r in filtered]; x,w=np.arange(len(tlist)),0.2
@@ -675,7 +818,8 @@ with tab5:
                 "Expiry":      t.get("order_expiry",""),
                 "Note":        "⚠️ Capped" if t.get("was_capped") else "",
             })
-            total_deployed += portfolio_value * t.get("pct_raw", 0)
+            amount_num = float(str(t["amount"]).replace("Rp","").replace(",","").strip() or 0)
+            total_deployed += amount_num
 
     # High-beta trades
     for t in plan.get("HIGH_BETA", []):
@@ -695,7 +839,8 @@ with tab5:
             "Expiry":     t.get("order_expiry",""),
             "Note":       "HIGH BETA",
         })
-        total_deployed += portfolio_value * t.get("pct_raw", 0)
+        amount_num = float(str(t["amount"]).replace("Rp","").replace(",","").strip() or 0)
+        total_deployed += amount_num
 
     # Watchlist — stocks that did NOT make the plan
     plan_tickers = {t["ticker"] for bucket in ["POSITION","SWING","SCALP","HIGH_BETA"]
@@ -715,7 +860,7 @@ with tab5:
             "Entry":  f"Rp {trade['entry_limit']:,.0f}" if trade else "N/A",
             "SL":     f"Rp {trade['stop_loss']:,.0f}" if trade else "N/A",
             "TP":     f"Rp {trade['take_profit']:,.0f}" if trade else "N/A",
-            "Why not": "Did not pass checklist",
+            "Why not": explain_rejection(r, trade_checklist(r, macro_score, regime, threshold)[0], macro_score),
         })
 
     summary = plan.get("_summary", {})
@@ -746,7 +891,7 @@ with tab5:
         st.caption("These stocks were analyzed but did not make the execution plan.")
         if watch_rows:
             st.dataframe(
-                pd.DataFrame(watch_rows)[["Ticker","Type","Action","Score","Entry","SL","TP"]]
+                pd.DataFrame(watch_rows)[["Ticker","Type","Action","Score","Entry","SL","TP","Why not"]]
                 .style.background_gradient(subset=["Score"], cmap="RdYlGn"),
                 use_container_width=True
             )
@@ -886,6 +1031,10 @@ with tab8:
     2. Message your bot → `https://api.telegram.org/bot<TOKEN>/getUpdates`
     3. Copy `chat_id` → paste in sidebar
     """)
+    st.caption(
+        "You can also store credentials in Streamlit secrets using keys: "
+        "`telegram_bot_token` + `telegram_chat_id` (or `[telegram] bot_token/chat_id`)."
+    )
     msg=build_morning_message(macro_score,stance,regime,regime_conf,
                                rec_sector,allocation,plan,scores,
                                commodity_context,portfolio_value,flow_narrative)
@@ -952,3 +1101,84 @@ with tab9:
                 .style.format({"Size": "{:.0f}", "Price": "Rp {:,.0f}"}),
                 use_container_width=True
             )
+
+with tab10:
+    st.subheader("📡 Signal Tracker")
+    jdf_for_import = get_journal_df()
+    if st.button("🔗 Import logged trades from Journal", key="import_journal_to_signals"):
+        imported = register_signals_from_journal(jdf_for_import.to_dict("records") if not jdf_for_import.empty else [])
+        if imported:
+            st.success(f"Imported {imported} journal trade(s) into signal history.")
+        else:
+            st.info("No new journal trades to import.")
+    all_signals = update_signal_statuses()
+    perf = compute_signal_performance(all_signals)
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("Win Rate (7d)", perf["win_rate_7d"])
+    mc2.metric("Win Rate (30d)", perf["win_rate_30d"])
+    mc3.metric("Win Rate (All)", perf["win_rate_all"])
+    mc4.metric("Avg Return", perf["avg_return"])
+    pc1, pc2 = st.columns(2)
+    pc1.metric("Expectancy", perf["expectancy"])
+    pc2.metric("Max Drawdown", perf["max_drawdown"])
+
+    if all_signals:
+        sdf = pd.DataFrame(all_signals).sort_values("timestamp", ascending=False)
+        sdf["source"] = sdf.get("source", "PLAN")
+        sdf["ts_date"] = pd.to_datetime(sdf["timestamp"], errors="coerce").dt.date
+        sdf["age_decay"] = sdf["days_since_signal"].apply(lambda d: max(0, min(25, d * 2)))
+        sdf["effective_confidence"] = (
+            pd.to_numeric(sdf.get("initial_confidence"), errors="coerce").fillna(0) - sdf["age_decay"]
+        ).clip(lower=0)
+        sdf["stale"] = sdf["days_since_signal"] >= 7
+        sdf["status"] = np.where(sdf["stale"] & (sdf["status"] == "ACTIVE"), "ACTIVE ⚠️ STALE", sdf["status"])
+        st.dataframe(
+            sdf[[
+                "ticker","entry","stop_loss","take_profit","timestamp","expiry_date",
+                "current_price","current_return_pct","days_since_signal",
+                "effective_confidence","source","status"
+            ]],
+            use_container_width=True
+        )
+        today_date = pd.Timestamp.utcnow().date()
+        today_df = sdf[sdf["ts_date"] == today_date]
+        old_df = sdf[sdf["ts_date"] < today_date]
+        t1, t2, t3, t4 = st.columns(4)
+        t1.metric("Today's Signals", int(len(today_df)))
+        t2.metric("Today's Avg Return", f"{pd.to_numeric(today_df.get('current_return_pct'), errors='coerce').mean():.2f}%"
+                  if len(today_df) else "0.00%")
+        t3.metric("Historical Signals", int(len(old_df)))
+        t4.metric("Historical Avg Return", f"{pd.to_numeric(old_df.get('current_return_pct'), errors='coerce').mean():.2f}%"
+                  if len(old_df) else "0.00%")
+
+        with st.expander("🕒 Status Change History"):
+            hist_rows = []
+            for s in all_signals:
+                for ev in s.get("status_history", []):
+                    hist_rows.append({
+                        "ticker": s.get("ticker"),
+                        "source": s.get("source", "PLAN"),
+                        "event_time": ev.get("timestamp"),
+                        "status": ev.get("status"),
+                        "price": ev.get("price"),
+                        "return_pct": ev.get("return_pct"),
+                        "note": ev.get("note"),
+                    })
+            if hist_rows:
+                hdf = pd.DataFrame(hist_rows).sort_values("event_time", ascending=False)
+                st.dataframe(hdf, use_container_width=True)
+            else:
+                st.caption("No status history recorded yet.")
+        active_tape = sdf[sdf["status"].str.contains("ACTIVE", na=False)].head(12)
+        if not active_tape.empty:
+            tape = " | ".join([
+                f"{r['ticker']} {float(r.get('current_return_pct',0) or 0):+.2f}% ({int(r.get('effective_confidence',0))})"
+                for _, r in active_tape.iterrows()
+            ])
+            st.markdown(
+                f"<marquee behavior='scroll' direction='left' scrollamount='8'>"
+                f"<span class='orange-accent'>Ticker Tape:</span> {tape}</marquee>",
+                unsafe_allow_html=True
+            )
+    else:
+        st.info("No signals tracked yet. Run Deep Analysis to generate fresh signals.")
