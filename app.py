@@ -124,6 +124,11 @@ elif selected_universe == "All":
 st.sidebar.divider()
 st.sidebar.subheader("🎚️ Threshold")
 use_auto = st.sidebar.checkbox("Use auto threshold", value=True)
+st.sidebar.divider()
+st.sidebar.subheader("🧭 Timing Model (Video Ref)")
+cpi_yoy_input = st.sidebar.number_input("US CPI YoY (%)", min_value=0.0, max_value=15.0, value=3.3, step=0.1)
+credit_spread_input = st.sidebar.number_input("HY Credit Spread (%)", min_value=0.0, max_value=25.0, value=4.0, step=0.1)
+accounting_risk_input = st.sidebar.checkbox("Accounting trust risk", value=False)
 
 st.sidebar.divider()
 st.sidebar.subheader("🧠 Learning Weights")
@@ -177,6 +182,12 @@ smart_threshold                      = auto_threshold(regime, macro_score)
 threshold = smart_threshold if use_auto else st.sidebar.slider(
     "Manual threshold", 0.10, 0.60, smart_threshold, 0.05)
 budget_map  = allocate_trades_by_sector(allocation, portfolio_value, high_beta_pct)
+timing_model = get_timing_model_signal(
+    details, scores, {}, None,
+    cpi_yoy=cpi_yoy_input,
+    credit_spread=credit_spread_input,
+    accounting_risk=accounting_risk_input,
+)
 
 # Auto-expire stale trades
 expired = expire_stale_trades()
@@ -258,6 +269,12 @@ with st.spinner("Loading sector money flow..."):
         flow_data, top_sector, bot_sector, flow_narrative = load_money_flow()
     except:
         flow_data, top_sector, bot_sector, flow_narrative = {}, rec_sector, "", "Flow data unavailable."
+timing_model = get_timing_model_signal(
+    details, scores, flow_data, None,
+    cpi_yoy=cpi_yoy_input,
+    credit_spread=credit_spread_input,
+    accounting_risk=accounting_risk_input,
+)
 
 cl,cr=st.columns([1,1])
 with cl:
