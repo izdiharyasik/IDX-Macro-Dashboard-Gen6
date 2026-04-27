@@ -124,6 +124,10 @@ def get_timing_model_signal(details, scores, flow_data, context, cpi_yoy=3.0, cr
         reason = "Credit spread and inflation are supportive"
     return {"signal": signal, "confidence": confidence, "reason": reason}
 
+def _fallback_timing_model_signal(*args, **kwargs):
+    """Backwards-compatible alias used by older merge paths."""
+    return get_timing_model_signal(*args, **kwargs)
+
 get_macro_alignment = getattr(eng, "get_macro_alignment", _fallback_macro_alignment)
 compute_trade_confidence = getattr(eng, "compute_trade_confidence", _fallback_trade_confidence)
 explain_rejection = getattr(eng, "explain_rejection", _fallback_explain_rejection)
