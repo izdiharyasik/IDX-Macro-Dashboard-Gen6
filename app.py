@@ -9,6 +9,15 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import engine as eng
+from utils.fred_client import fetch_fred, parse_latest_value, parse_change_arrow
+from utils.supabase_client import (
+    get_supabase_client,
+    safe_select,
+    safe_insert,
+    compute_portfolio_heat,
+)
+from utils.regime_detector import classify_ihsg_regime, classify_vix_bucket, detect_operating_mode
+from utils.dg_checklist import build_dg_metrics, score_dg
 from engine import (
     get_macro_score, get_commodity_context,
     detect_regime, auto_threshold, get_allocation, recommend_sector,
@@ -67,6 +76,25 @@ def _fallback_explain_rejection(result, checks, macro_score):
         return "Composite below threshold"
     return "Relative ranking below selected setups"
 
+def get_timing_model_signal(details, scores, flow_data, context, cpi_yoy=3.0, credit_spread=4.0, accounting_risk=False):
+    _ = details, scores, flow_data, context, accounting_risk
+    signal = "NEUTRAL"
+    confidence = "MEDIUM"
+    reason = "Macro conditions are mixed"
+    if float(credit_spread or 0) > 8.0:
+        signal = "CAUTION"
+        confidence = "HIGH"
+        reason = "Credit spread elevated"
+    elif float(cpi_yoy or 0) > 3.5:
+        signal = "CAUTION"
+        confidence = "MEDIUM"
+        reason = "Inflation too high for Fed to act"
+    elif float(credit_spread or 0) < 5.0 and float(cpi_yoy or 0) < 3.0:
+        signal = "BUY"
+        confidence = "HIGH"
+        reason = "Credit spread and inflation are supportive"
+    return {"signal": signal, "confidence": confidence, "reason": reason}
+
 get_macro_alignment = getattr(eng, "get_macro_alignment", _fallback_macro_alignment)
 compute_trade_confidence = getattr(eng, "compute_trade_confidence", _fallback_trade_confidence)
 explain_rejection = getattr(eng, "explain_rejection", _fallback_explain_rejection)
@@ -82,84 +110,104 @@ st.markdown("""
 .stTabs [role="tab"] { padding: 0.35rem 0.7rem; }
 </style>
 """, unsafe_allow_html=True)
-st.title("📊 IDX Macro Trading Dashboard — Gen 5")
+st.title("📊 IDX Macro Trading Dashboard — Gen 7")
 
-# ── SIDEBAR ───────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=900, show_spinner=False)
+def load_yf_data(symbol, period="6mo", interval="1d"):
+    try:
+        df = yf.download(symbol, period=period, interval=interval, auto_adjust=True, progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            # yfinance may return MultiIndex columns even for a single ticker.
+            # Keep the first level (Open/High/Low/Close/Volume) for Streamlit chart compatibility.
+            df.columns = df.columns.get_level_values(0)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_fred_bundle(api_key):
+    if not api_key:
+        return {}
+    series_map = {
+        "hy_spread": "BAMLH0A0HYM2",
+        "fed_funds": "FEDFUNDS",
+        "cpi": "CPIAUCSL",
+        "us10y": "DGS10",
+    }
+    out = {}
+    for key, series in series_map.items():
+        try:
+            out[key] = fetch_fred(series, api_key, limit=24 if key == "cpi" else 5)
+        except Exception:
+            out[key] = []
+    return out
+
+# ── SIDEBAR (GEN 7 REFACTOR) ─────────────────────────────────────────────────
 st.sidebar.header("⚙️ Settings")
+with st.sidebar.expander("Universe and filters", expanded=True):
+    portfolio_raw = st.text_input(
+        "Portfolio Value (IDR)",
+        value="100,000,000",
+        help="Enter any amount, e.g. 75,000,000"
+    )
+    try:
+        portfolio_value = int(portfolio_raw.replace(",","").replace(".","").strip())
+    except Exception:
+        portfolio_value = 100_000_000
+        st.warning("Invalid input — using Rp 100,000,000")
+    st.caption(f"= Rp {portfolio_value:,.0f}")
 
-# Gen 4: Free-form portfolio input with formatting
-portfolio_raw = st.sidebar.text_input(
-    "Portfolio Value (IDR)",
-    value="100,000,000",
-    help="Enter any amount, e.g. 75,000,000"
-)
-try:
-    portfolio_value = int(portfolio_raw.replace(",","").replace(".","").strip())
-except:
-    portfolio_value = 100_000_000
-    st.sidebar.warning("Invalid input — using Rp 100,000,000")
-st.sidebar.caption(f"= Rp {portfolio_value:,.0f}")
+    risk_pct_input = st.slider("Risk per trade (%)", 0.5, 3.0, 1.0, 0.25) / 100
+    top_n = st.slider("Top N candidates", 5, 20, 10)
+    use_sector = st.checkbox("Limit screen to recommended sector", value=False)
+    rr_ratio = st.slider("Risk/Reward Ratio", 1.0, 4.0, 2.0, 0.5)
+    high_beta_pct = st.slider("High-Beta capital %", 0, 30, 15) / 100
+    sharia_only = st.checkbox("☪️ Sharia compliant only", value=False)
+    selected_universe = st.radio(
+        "Universe",
+        options=["IDX", "LQ45", "Gorengan", "All"],
+        index=0,
+        horizontal=True,
+        help="IDX: ~50 blue chips | LQ45: top 45 liquid | Gorengan: high-beta small caps ⚠️ | All: everything"
+    )
+    use_auto = st.checkbox("Use auto threshold", value=True)
 
-risk_pct_input   = st.sidebar.slider("Risk per trade (%)", 0.5, 3.0, 1.0, 0.25) / 100
-top_n            = st.sidebar.slider("Top N candidates", 5, 20, 10)
-use_sector       = st.sidebar.checkbox("Limit screen to recommended sector", value=False)
-rr_ratio         = st.sidebar.slider("Risk/Reward Ratio", 1.0, 4.0, 2.0, 0.5)
-high_beta_pct    = st.sidebar.slider("High-Beta capital %", 0, 30, 15) / 100
-sharia_only      = st.sidebar.checkbox("☪️ Sharia compliant only", value=False)
+with st.sidebar.expander("Model settings", expanded=False):
+    st.caption("Manual override — use if FRED API unavailable")
+    cpi_yoy_override = st.number_input("Manual US CPI YoY (%)", min_value=0.0, max_value=15.0, value=3.3, step=0.1)
+    credit_spread_override = st.number_input("Manual HY Credit Spread (%)", min_value=0.0, max_value=25.0, value=4.0, step=0.1)
+    manual_threshold_input = st.slider("Manual threshold", 0.10, 0.60, 0.30, 0.05)
+    accounting_risk_input = st.checkbox("Accounting trust risk", value=False)
+    use_learned = st.checkbox("Use learned weights", value=True)
 
-st.sidebar.divider()
-st.sidebar.subheader("🌐 Stock Universe")
-selected_universe = st.sidebar.radio(
-    "Universe",
-    options=["IDX", "LQ45", "Gorengan", "All"],
-    index=0,
-    horizontal=True,
-    help="IDX: ~50 blue chips | LQ45: top 45 liquid | Gorengan: high-beta small caps ⚠️ | All: everything"
-)
-if selected_universe == "Gorengan":
-    st.sidebar.warning("⚠️ Gorengan = high risk. Scalp plays only. Tight stops required.")
-elif selected_universe == "All":
-    st.sidebar.info(f"All universe: ~{len(resolve_universe('All'))} stocks. Scan will take longer.")
+with st.sidebar.expander("Alerts and automation", expanded=False):
+    auto_send_summary = st.checkbox("Auto-send morning summary", value=False)
+    st.caption("Telegram credentials can come from Streamlit secrets.")
+    secret_tg_token = (
+        st.secrets.get("telegram_bot_token")
+        or st.secrets.get("TG_BOT_TOKEN")
+        or st.secrets.get("bot_token")
+        or st.secrets.get("telegram", {}).get("bot_token")
+    )
+    secret_tg_chat_id = (
+        st.secrets.get("telegram_chat_id")
+        or st.secrets.get("TG_CHAT_ID")
+        or st.secrets.get("chat_id")
+        or st.secrets.get("telegram", {}).get("chat_id")
+    )
+    tg_token = st.text_input("Bot Token", type="password", value=secret_tg_token or "")
+    tg_chat_id = st.text_input("Chat ID", value=secret_tg_chat_id or "")
 
-st.sidebar.divider()
-st.sidebar.subheader("🎚️ Threshold")
-use_auto = st.sidebar.checkbox("Use auto threshold", value=True)
-st.sidebar.divider()
-st.sidebar.subheader("🧭 Timing Model (Video Ref)")
-cpi_yoy_input = st.sidebar.number_input("US CPI YoY (%)", min_value=0.0, max_value=15.0, value=3.3, step=0.1)
-credit_spread_input = st.sidebar.number_input("HY Credit Spread (%)", min_value=0.0, max_value=25.0, value=4.0, step=0.1)
-accounting_risk_input = st.sidebar.checkbox("Accounting trust risk", value=False)
-
-st.sidebar.divider()
-st.sidebar.subheader("🧠 Learning Weights")
+# Learned weights (kept, but clean messaging)
 learned_weights = get_learned_weights()
 _, journal_stats = get_journal_stats()
 if journal_stats:
-    st.sidebar.caption(f"Trades logged: {journal_stats.get('total_trades','?')} | "
-                       f"Win rate: {journal_stats.get('win_rate','?')}")
-use_learned = st.sidebar.checkbox("Use learned weights", value=True,
-                                   disabled=not bool(journal_stats))
+    st.sidebar.caption(f"Trades logged: {journal_stats.get('total_trades','?')} | Win rate: {journal_stats.get('win_rate','?')}")
+else:
+    st.sidebar.caption("No trades logged yet — learning weights defaulting to base")
+if not journal_stats:
+    use_learned = False
 active_weights = learned_weights if (use_learned and journal_stats) else DEFAULT_WEIGHTS
-
-st.sidebar.divider()
-st.sidebar.subheader("📱 Telegram")
-secret_tg_token = (
-    st.secrets.get("telegram_bot_token")
-    or st.secrets.get("TG_BOT_TOKEN")
-    or st.secrets.get("bot_token")
-    or st.secrets.get("telegram", {}).get("bot_token")
-)
-secret_tg_chat_id = (
-    st.secrets.get("telegram_chat_id")
-    or st.secrets.get("TG_CHAT_ID")
-    or st.secrets.get("chat_id")
-    or st.secrets.get("telegram", {}).get("chat_id")
-)
-tg_token   = st.sidebar.text_input("Bot Token",  type="password", value=secret_tg_token or "")
-tg_chat_id = st.sidebar.text_input("Chat ID", value=secret_tg_chat_id or "")
-if secret_tg_token and secret_tg_chat_id:
-    st.sidebar.success("✅ Telegram credentials loaded from Streamlit secrets.")
-    st.sidebar.caption("Deep Analysis will auto-send your morning summary.")
 
 # ── CACHED MACRO ──────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -171,6 +219,42 @@ def load_commodities(): return get_commodity_context()
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_money_flow():  return get_money_flow()
 
+supabase_client = get_supabase_client(st.secrets)
+fred_api_key = st.secrets.get("FRED_API_KEY", "")
+fred_bundle = load_fred_bundle(fred_api_key)
+
+fred_unavailable = not bool(fred_bundle) or all(not v for v in fred_bundle.values())
+if fred_unavailable:
+    st.warning("FRED API unavailable — using manual inputs.")
+
+hy_spread_live = parse_latest_value(fred_bundle.get("hy_spread", [])) if not fred_unavailable else None
+fed_funds_live = parse_latest_value(fred_bundle.get("fed_funds", [])) if not fred_unavailable else None
+us10y_live = parse_latest_value(fred_bundle.get("us10y", [])) if not fred_unavailable else None
+
+def _calc_cpi_yoy(cpi_obs):
+    vals = []
+    for obs in cpi_obs:
+        try:
+            vals.append(float(obs.get("value")))
+        except Exception:
+            continue
+    if len(vals) < 13:
+        return None
+    return ((vals[0] / vals[12]) - 1) * 100
+
+cpi_yoy_live = _calc_cpi_yoy(fred_bundle.get("cpi", [])) if not fred_unavailable else None
+credit_spread_input = hy_spread_live if hy_spread_live is not None else credit_spread_override
+cpi_yoy_input = cpi_yoy_live if cpi_yoy_live is not None else cpi_yoy_override
+
+fed_stance = "HOLDING"
+fed_values = [parse_latest_value([o]) for o in fred_bundle.get("fed_funds", [])[:3]]
+fed_values = [v for v in fed_values if v is not None]
+if len(fed_values) >= 3:
+    if fed_values[0] > fed_values[2]:
+        fed_stance = "HIKING"
+    elif fed_values[0] < fed_values[2]:
+        fed_stance = "CUTTING"
+
 macro_score, stance, scores, details = load_macro()
 macro_alignment_score, macro_conf_level, macro_breakdown = get_macro_alignment(scores)
 commodity_context                    = load_commodities()
@@ -179,8 +263,7 @@ allocation                           = get_allocation(regime, macro_score)
 rec_sector, rec_reason, signals      = recommend_sector(macro_score, scores, commodity_context)
 emoji                                = REGIME_COLORS.get(regime,"⚪")
 smart_threshold                      = auto_threshold(regime, macro_score)
-threshold = smart_threshold if use_auto else st.sidebar.slider(
-    "Manual threshold", 0.10, 0.60, smart_threshold, 0.05)
+threshold = smart_threshold if use_auto else manual_threshold_input
 budget_map  = allocate_trades_by_sector(allocation, portfolio_value, high_beta_pct)
 timing_model = get_timing_model_signal(
     details, scores, {}, None,
@@ -194,6 +277,51 @@ expired = expire_stale_trades()
 if expired:
     st.warning(f"⏰ {len(expired)} trade(s) auto-expired today: {', '.join(t['ticker'] for t in expired)}")
 
+# SECTION 0 — Operating mode banner
+ihsg_df = load_yf_data("^JKSE", period="6mo")
+vix_df = load_yf_data("^VIX", period="3mo")
+ihsg_close = float(ihsg_df["Close"].dropna().iloc[-1]) if not ihsg_df.empty else 0.0
+ihsg_ema50 = float(ihsg_df["Close"].ewm(span=50, adjust=False).mean().dropna().iloc[-1]) if not ihsg_df.empty else 0.0
+ihsg_regime = classify_ihsg_regime(ihsg_close, ihsg_ema50) if ihsg_close else "NEUTRAL"
+vix_now = float(vix_df["Close"].dropna().iloc[-1]) if not vix_df.empty else 0.0
+vix_bucket = classify_vix_bucket(vix_now)
+
+margin_rows, margin_err = safe_select(supabase_client, "margin_debt", columns="month,debit_balance_millions,recorded_at", order_by="recorded_at", limit=2)
+margin_direction = "UNKNOWN"
+if len(margin_rows) >= 2:
+    current_md = float(margin_rows[0].get("debit_balance_millions", 0) or 0)
+    prev_md = float(margin_rows[1].get("debit_balance_millions", 0) or 0)
+    margin_direction = "DELEVERAGING" if current_md < prev_md else "LEVERAGING UP"
+
+earnings_rows, _ = safe_select(supabase_client, "earnings_log", columns="ticker,eps_actual,eps_estimate,revenue_beat,recorded_at", order_by="recorded_at", limit=200)
+earnings_df = pd.DataFrame(earnings_rows) if earnings_rows else pd.DataFrame(columns=["ticker", "eps_actual", "eps_estimate", "revenue_beat"])
+if not earnings_df.empty:
+    earnings_df["beat"] = earnings_df.apply(lambda r: (r.get("eps_actual", 0) or 0) > (r.get("eps_estimate", 0) or 0), axis=1)
+leading_tickers = set((SECTORS.get(rec_sector, {}) or {}).get("T1", [])[:3])
+earnings_beats = int(earnings_df[earnings_df["ticker"].isin(leading_tickers)]["beat"].sum()) if (not earnings_df.empty and "ticker" in earnings_df.columns) else 0
+
+sector_leader_text = f"{rec_sector} leader"
+dg_metrics = build_dg_metrics(vix_now, fed_stance, margin_direction, sector_leader_text, earnings_beats)
+dg_score, dg_verdict = score_dg(dg_metrics)
+guardrails = {
+    "credit_spread>8": float(credit_spread_input or 0) > 8,
+    "cpi>3": float(cpi_yoy_input or 0) > 3,
+    "margin_rising": margin_direction == "LEVERAGING UP",
+}
+mode_payload = detect_operating_mode(vix_now, dg_score, guardrails)
+
+color_map = {"blue": "#1E88E5", "amber": "#F9A825", "green": "#2E7D32", "red": "#C62828"}
+st.markdown(
+    f"""
+<div style="padding:16px;border-radius:12px;background:{color_map.get(mode_payload['color'], '#1E88E5')};color:white;margin-bottom:14px;">
+<b>{mode_payload['mode']}</b> — {mode_payload['message']}<br/>
+VIX: {vix_now:.2f} ({vix_bucket}) | DG score: {dg_score}/5 | Sizing: {mode_payload['risk_guidance']}<br/>
+Guardrails: Credit>{'ON' if guardrails['credit_spread>8'] else 'OFF'}, CPI>{'ON' if guardrails['cpi>3'] else 'OFF'}, Margin rising={'ON' if guardrails['margin_rising'] else 'OFF'}
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
 # ═══════════════════════════════════════════════════════════
 # 1. REGIME + MACRO
 # ═══════════════════════════════════════════════════════════
@@ -202,6 +330,56 @@ st.header("1. Market Regime + Macro")
 cmap={"CRISIS":"error","RISK_OFF":"error","TIGHTENING":"warning",
       "INFLATION":"warning","RISK_ON":"success","NEUTRAL":"info"}
 getattr(st,cmap[regime])(f"{emoji} **{regime}** — {regime_conf}% | {regime_reason}")
+
+macro_c1, macro_c2, macro_c3 = st.columns(3)
+macro_c1.metric("IHSG Regime Gate", ihsg_regime)
+macro_c2.metric("VIX Alarm", f"{vix_now:.2f}", vix_bucket)
+macro_c3.metric("Operating Mode", mode_payload["mode"], mode_payload["risk_guidance"])
+
+if (not ihsg_df.empty) and ("Close" in ihsg_df.columns):
+    ihsg_close_series = ihsg_df["Close"].astype(float)
+    spark = pd.DataFrame({
+        "Close": ihsg_close_series.tail(30),
+        "EMA50": ihsg_close_series.ewm(span=50, adjust=False).mean().tail(30),
+    }).dropna()
+    if isinstance(spark.columns, pd.MultiIndex):
+        spark.columns = spark.columns.get_level_values(0)
+    spark.columns = [str(c) for c in spark.columns]
+    if not spark.empty:
+        try:
+            fig_spark, ax_spark = plt.subplots(figsize=(8, 2.4))
+            ax_spark.plot(spark.index, spark["Close"].values, label="IHSG", linewidth=1.8)
+            ax_spark.plot(spark.index, spark["EMA50"].values, label="EMA50", linewidth=1.2, linestyle="--")
+            ax_spark.legend(loc="upper left", fontsize=8)
+            ax_spark.grid(alpha=0.2)
+            ax_spark.set_ylabel("Price")
+            st.pyplot(fig_spark)
+            plt.close(fig_spark)
+        except Exception as exc:
+            st.warning(f"IHSG sparkline unavailable: {exc}")
+
+fred_cols = st.columns(4)
+fred_cols[0].metric("HY Credit Spread", f"{float(credit_spread_input or 0):.2f}%", parse_change_arrow(fred_bundle.get("hy_spread", [])))
+fred_cols[1].metric("Fed Funds", f"{float(fed_funds_live or 0):.2f}%", f"{fed_stance}")
+fred_cols[2].metric("CPI YoY", f"{float(cpi_yoy_input or 0):.2f}%", parse_change_arrow(fred_bundle.get("cpi", [])))
+fred_cols[3].metric("10Y Treasury", f"{float(us10y_live or 0):.2f}%", parse_change_arrow(fred_bundle.get("us10y", [])))
+
+st.caption("FINRA margin debt data is typically delayed by ~3–4 weeks.")
+md_col1, md_col2 = st.columns([2, 1])
+with md_col1:
+    if margin_rows:
+        st.write(f"Latest FINRA update: {margin_rows[0].get('month', 'N/A')} | Direction: **{margin_direction}**")
+    if margin_err:
+        st.warning(f"Margin debt table unavailable: {margin_err}")
+with md_col2:
+    new_month = st.text_input("FINRA month", value="")
+    new_margin = st.number_input("Debit balance ($M)", min_value=0.0, value=0.0, step=100.0)
+    if st.button("Save margin debt"):
+        err = safe_insert(supabase_client, "margin_debt", {"month": new_month, "debit_balance_millions": float(new_margin)})
+        if err:
+            st.warning(f"Failed to save margin debt: {err}")
+        else:
+            st.success("Margin debt record saved.")
 
 with st.expander("🌍 Macro Recap + Interpretation", expanded=True):
     rc1,rc2=st.columns(2)
@@ -259,10 +437,56 @@ for i,(name,data) in enumerate(commodity_context.items()):
         t=data.get("trend",{})
         if t: st.caption(f"5d:{t.get('5d','N/A')} 20d:{t.get('20d','N/A')}")
 
+show_dg_direct = mode_payload["mode"] in ("ELEVATED RISK", "CRISIS ENTRY")
+dg_container = st.container() if show_dg_direct else st.expander("DG crisis checklist (inactive — VIX too low).", expanded=False)
+with dg_container:
+    st.subheader("DG CRISIS ENTRY CHECKLIST")
+    for metric_name, payload in dg_metrics.items():
+        marker = "✓" if payload["ok"] else "✗"
+        color = "🟢" if payload["ok"] else "⚪"
+        st.write(f"[{marker}] {metric_name} — {payload['detail']} {color}")
+    st.markdown(f"**SCORE:** {dg_score} / 5")
+    st.markdown(f"**VERDICT:** {dg_verdict}")
+
+    earnings_editor = earnings_df.copy()
+    if earnings_editor.empty:
+        earnings_editor = pd.DataFrame([{"ticker": "", "period": "", "eps_actual": 0.0, "eps_estimate": 0.0, "revenue_beat": False, "beat": False}])
+    editable = st.data_editor(
+        earnings_editor[["ticker", "period", "eps_actual", "eps_estimate", "revenue_beat", "beat"]] if "period" in earnings_editor.columns else earnings_editor,
+        num_rows="dynamic",
+        width="stretch",
+        key="earnings_editor",
+    )
+    if st.button("Save earnings rows"):
+        saved = 0
+        for _, row in editable.iterrows():
+            if not str(row.get("ticker", "")).strip():
+                continue
+            payload = {
+                "ticker": str(row.get("ticker", "")).strip(),
+                "period": str(row.get("period", "")).strip(),
+                "eps_actual": float(row.get("eps_actual", 0) or 0),
+                "eps_estimate": float(row.get("eps_estimate", 0) or 0),
+                "revenue_beat": bool(row.get("revenue_beat", False)),
+            }
+            err = safe_insert(supabase_client, "earnings_log", payload)
+            if not err:
+                saved += 1
+        st.success(f"Saved {saved} earnings row(s).")
+
 # ═══════════════════════════════════════════════════════════
 # 2. ALLOCATION + MONEY FLOW + SECTOR ACTION
 # ═══════════════════════════════════════════════════════════
 st.header("2. Portfolio Allocation + Money Flow")
+
+open_trade_rows, open_trade_err = safe_select(supabase_client, "trades", columns="risk_pct,status", limit=500)
+open_trade_rows = [r for r in open_trade_rows if str(r.get("status", "OPEN")).upper() == "OPEN"]
+heat_pct, open_count = compute_portfolio_heat(open_trade_rows)
+heat_norm = min(1.0, heat_pct / 6.0)
+st.caption(f"Portfolio heat: {heat_pct:.2f}% capital at risk across {open_count} open trades")
+st.progress(heat_norm)
+if open_trade_err:
+    st.warning(f"Portfolio heat unavailable from Supabase: {open_trade_err}")
 
 with st.spinner("Loading sector money flow..."):
     try:
@@ -291,7 +515,8 @@ with cr:
     fig,ax=plt.subplots(figsize=(5,4)); ax.set_facecolor("#0f1117")
     fig.patch.set_facecolor("#0f1117")
     labels=list(allocation.keys()); sizes=list(allocation.values())
-    colors=["#4CAF50","#2196F3","#FF9800","#9C27B0","#F44336","#9E9E9E"][:len(labels)]
+    custom_color_map = {"Banks":"#1D9E75","Defensive":"#7F77DD","Commodities":"#EF9F27","Cash":"#888780"}
+    colors=[custom_color_map.get(lbl, "#4CAF50") for lbl in labels]
     wedges,texts,autos=ax.pie(sizes,colors=colors,autopct="%1.0f%%",startangle=90,
                                wedgeprops={"edgecolor":"#0f1117","linewidth":2})
     for a in autos: a.set_color("white"); a.set_fontsize(9)
@@ -311,7 +536,7 @@ if flow_data:
     ]).sort_values("Score",ascending=False)
     st.dataframe(
         flow_df.style.background_gradient(subset=["Score"],cmap="RdYlGn"),
-        use_container_width=True
+        width="stretch"
     )
 
 # Sector action translator
@@ -356,22 +581,38 @@ if st.button("🔍 Run Momentum Screen"):
 
 if "all_scores" not in st.session_state:
     st.info("👆 Click **Run Momentum Screen** to start.")
-    st.stop()
-
-all_scores    =st.session_state["all_scores"]
-top_candidates=st.session_state["top_candidates"]
-raw_data      =st.session_state.get("raw_data",{})
-hb_plays      =st.session_state.get("hb_plays",[])
+    all_scores = pd.DataFrame(columns=["ticker","price","momentum","rsi","vol_ratio","52w_prox","20d_return","vs_ihsg","beta","sharia","high_beta","sector","avg_volume"])
+    top_candidates = []
+    raw_data = {}
+    hb_plays = []
+else:
+    all_scores    =st.session_state["all_scores"]
+    top_candidates=st.session_state["top_candidates"]
+    raw_data      =st.session_state.get("raw_data",{})
+    hb_plays      =st.session_state.get("hb_plays",[])
 
 disp=all_scores.copy()
 if sharia_only: disp=disp[disp["sharia"]==True]
+if "52w_prox" in disp.columns:
+    disp = disp.rename(columns={"52w_prox": "52w_hi_pct"})
+if "avg_volume" not in disp.columns:
+    disp["avg_volume"] = np.nan
+disp["ARB_risk"] = disp.apply(
+    lambda r: "HIGH" if (float(r.get("price", 0) or 0) < 200 or float(r.get("avg_volume", 0) or 0) < 5_000_000) else "LOW",
+    axis=1
+)
+disp["sector_warning"] = disp.get("sector", "").apply(
+    lambda s: "⚠ AVOID SECTOR" if sector_action.get("strength") == "AVOID" and str(s).strip() else ""
+) if "sector" in disp.columns else ""
 disp["☪️"]=disp["sharia"].apply(lambda x:"☪️" if x else "")
 disp["🚀"]=disp["high_beta"].apply(lambda x:"🚀" if x else "")
+for col in disp.select_dtypes(include=[np.number]).columns:
+    disp[col] = disp[col].round(2)
 st.dataframe(
     disp.head(top_n)[["ticker","price","momentum","rsi","vol_ratio",
-                       "52w_prox","20d_return","vs_ihsg","beta","☪️","🚀"]]
+                       "52w_hi_pct","20d_return","vs_ihsg","beta","ARB_risk","sector_warning","☪️","🚀"]]
     .style.background_gradient(subset=["momentum"],cmap="RdYlGn"),
-    use_container_width=True
+    width="stretch"
 )
 
 if hb_plays:
@@ -380,10 +621,11 @@ if hb_plays:
     hb_df["☪️"]=hb_df["sharia"].apply(lambda x:"☪️" if x else "")
     st.dataframe(hb_df[["ticker","beta_score","price","vol_ratio","5d_mom","adr","rsi","☪️"]]
                  .style.background_gradient(subset=["beta_score"],cmap="Oranges"),
-                 use_container_width=True)
+                 width="stretch")
 
 if sharia_only: top_candidates=[t for t in top_candidates if SHARIA_COMPLIANT.get(t,True)]
-custom=st.multiselect("Override candidates:",options=scan_universe,default=top_candidates)
+default_candidates = [t for t in top_candidates if t in scan_universe]
+custom=st.multiselect("Override candidates:",options=scan_universe,default=default_candidates)
 final_candidates=custom if custom else top_candidates
 if sharia_only: final_candidates=[t for t in final_candidates if SHARIA_COMPLIANT.get(t,True)]
 
@@ -412,6 +654,13 @@ if sector_action["strength"] in ("STRONG", "MODERATE") and not use_sector:
 st.header("4. Deep Signal Analysis")
 st.caption(f"Threshold: {threshold} | Risk/trade: {risk_pct_input*100:.1f}% | "
            f"Weights: {'🧠 Learned' if use_learned and journal_stats else '📐 Default'}")
+st.caption(f"Analysis context: **{mode_payload['mode']}** — sizing guidance: **{mode_payload['risk_guidance']}**")
+
+if all_scores.empty:
+    st.info(
+        "Preview output: Conviction score | Entry zone | Stop loss | Target | Risk/reward | "
+        "FVG detected | ARB risk | Sector status"
+    )
 
 if st.button(f"⚡ Run Deep Analysis on {len(final_candidates)} stocks"):
     with st.spinner("Running full analysis — grab a coffee ☕"):
@@ -620,7 +869,7 @@ with tab2:
         st.dataframe(
             display_df.style.background_gradient(
                 subset=["⚡ Composite","📈 Technical","📰 Sentiment","🏗 Fundamental"],cmap="RdYlGn"),
-            use_container_width=True)
+            width="stretch")
     else:
         st.info("No setups match the selected confidence filters.")
 
@@ -838,7 +1087,7 @@ with tab5:
     # Active trades
     st.subheader(f"✅ Active Trades — {len(active_rows)}")
     if active_rows:
-        st.dataframe(_safe_df(active_rows), use_container_width=True)
+        st.dataframe(_safe_df(active_rows), width="stretch")
     else:
         st.warning("No stocks passed checklist today. Sit on hands 🙌")
 
@@ -863,7 +1112,7 @@ with tab5:
             st.dataframe(
                 pd.DataFrame(watch_rows)[["Ticker","Type","Action","Score","Entry","SL","TP","Why not"]]
                 .style.background_gradient(subset=["Score"], cmap="RdYlGn"),
-                use_container_width=True
+                width="stretch"
             )
 
 # ── TAB 6: JOURNAL ────────────────────────────────────────
@@ -920,7 +1169,7 @@ with tab6:
             jdf[["id","date","ticker","trade_type","regime","composite",
                  "entry_price","exit_price","pnl_pct","result","status"]]
             .style.background_gradient(subset=["pnl_pct"],cmap="RdYlGn"),
-            use_container_width=True
+            width="stretch"
         )
         # PnL chart
         closed=jdf[jdf["status"]=="CLOSED"].copy()
@@ -990,7 +1239,7 @@ with tab7:
                     trades_df[["ticker","trade_type","entry_date","exit_date",
                                "entry_px","exit_px","return_net","win"]]
                     .style.background_gradient(subset=["return_net"],cmap="RdYlGn"),
-                    use_container_width=True)
+                    width="stretch")
 
 # ── TAB 8: TELEGRAM ─────────────────────────────────────
 with tab8:
@@ -1019,7 +1268,7 @@ with tab8:
 
     preview_img = st.session_state.get("telegram_preview_img")
     if preview_img:
-        st.image(preview_img, caption="Telegram brief image preview", use_container_width=True)
+        st.image(preview_img, caption="Telegram brief image preview", width="stretch")
     else:
         st.caption("Click **Generate Image Preview** to render the latest briefing image.")
 
@@ -1057,7 +1306,7 @@ with tab9:
                     
                     st.dataframe(
                         fvg_results.style.format({"Size": "{:.0f}", "Price": "Rp {:,.0f}"}),
-                        use_container_width=True
+                        width="stretch"
                     )
                 else:
                     st.info("No fresh Fair Value Gaps detected on the daily timeframe today. Market is balanced.")
@@ -1069,7 +1318,7 @@ with tab9:
             st.dataframe(
                 cached_fvg.sort_values(by="Size", ascending=False).reset_index(drop=True)
                 .style.format({"Size": "{:.0f}", "Price": "Rp {:,.0f}"}),
-                use_container_width=True
+                width="stretch"
             )
 
 with tab10:
@@ -1099,7 +1348,7 @@ with tab10:
                 "current_price","current_return_pct","days_since_signal",
                 "effective_confidence","status"
             ]],
-            use_container_width=True
+            width="stretch"
         )
         active_tape = sdf[sdf["status"].str.contains("ACTIVE", na=False)].head(12)
         if not active_tape.empty:
