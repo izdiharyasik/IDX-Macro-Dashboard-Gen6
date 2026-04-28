@@ -1353,12 +1353,20 @@ def build_execution_plan(results, macro_score, regime, allocation,
 # GEN 4: BACKTEST V2 (Sharpe + per-regime + per-type)
 # ═══════════════════════════════════════════════════════════
 def run_backtest(raw_data_dict, universe, threshold=0.3,
-                 start_capital=100_000_000, fee_pct=0.002):
+                 start_capital=100_000_000, fee_pct=0.002,
+                 max_positions=8, alloc_per_trade=0.12):
     all_trades = []
+    errors = []
     for ticker in universe:
         if ticker not in raw_data_dict: continue
         try:
             df=raw_data_dict[ticker].copy(); df.columns=[c.lower() for c in df.columns]
+            if len(df)<252*2:
+                try:
+                    df = yf.Ticker(ticker).history(period="3y")
+                    df.columns=[c.lower() for c in df.columns]
+                except Exception:
+                    pass
             if len(df)<60: continue
             close,volume=df["close"],df["volume"]
             rsi    =_rsi_series(close)
@@ -1374,36 +1382,105 @@ def run_backtest(raw_data_dict, universe, threshold=0.3,
             adr_s=((df["high"]-df["low"])/df["close"]).rolling(5).mean().fillna(0.02)*100
 
             in_trade,entry_px,entry_day,hold,ttype=False,0.0,0,5,"SWING"
+            stop_pct, planned_exit_day = 0.08, 0
             for i in range(60,len(close)):
                 if not in_trade:
+                    if i + 1 >= len(close):
+                        continue
                     if float(signal.iloc[i])>threshold:
                         vr=float(vol_ratio_s.iloc[i]); adr=float(adr_s.iloc[i]); rs=float(rsi.iloc[i])
                         if vr>2.0 and adr>3.0:  ttype,hold="SCALP",1
                         elif rs>55 and vr>1.3:  ttype,hold="SWING",5
                         else:                   ttype,hold="POSITION",20
-                        in_trade,entry_px,entry_day=True,float(close.iloc[i]),i
-                elif i>=entry_day+hold:
+                        stop_pct = {"SCALP": 0.03, "SWING": 0.06, "POSITION": 0.10}.get(ttype, 0.08)
+                        entry_day = i + 1  # avoid look-ahead bias
+                        entry_px = float(close.iloc[entry_day])
+                        planned_exit_day = min(entry_day + hold, len(close) - 1)
+                        in_trade = True
+                elif i >= entry_day:
+                    exit_now = False
+                    exit_reason = "time"
+                    stop_px = entry_px * (1 - stop_pct)
+                    if float(close.iloc[i]) <= stop_px:
+                        exit_now = True
+                        exit_reason = "stop"
+                    elif i >= planned_exit_day:
+                        exit_now = True
+                    if not exit_now:
+                        continue
                     exit_px=float(close.iloc[i])
                     net=(exit_px-entry_px)/entry_px-fee_pct
+                    hold_days = max(1, i - entry_day)
+                    daily_ret = (1 + net) ** (1 / hold_days) - 1 if (1 + net) > 0 else -1.0
                     all_trades.append({"ticker":ticker,"trade_type":ttype,
-                        "entry_date":close.index[entry_day],"exit_date":close.index[i],
+                        "entry_date":pd.Timestamp(close.index[entry_day]),"exit_date":pd.Timestamp(close.index[i]),
                         "entry_px":round(entry_px,0),"exit_px":round(exit_px,0),
-                        "return_net":round(net,4),"win":net>0})
+                        "hold_days":hold_days,"daily_ret":round(daily_ret,6),
+                        "return_net":round(net,4),"win":net>0,"exit_reason":exit_reason})
                     in_trade=False
-        except: continue
+        except Exception as exc:
+            errors.append(f"{ticker}: {exc}")
+            continue
 
     if not all_trades: return pd.DataFrame(),{},{}
     df_t=pd.DataFrame(all_trades).sort_values("entry_date").reset_index(drop=True)
-    df_t["equity"]=start_capital*(1+df_t["return_net"]).cumprod()
-    equity=df_t["equity"].values; peak=np.maximum.accumulate(equity); dd=(equity-peak)/peak
+    df_t["entry_date"] = pd.to_datetime(df_t["entry_date"])
+    df_t["exit_date"] = pd.to_datetime(df_t["exit_date"])
 
-    # Sharpe ratio (annualized, assuming ~250 trading days/year)
-    rets   = df_t["return_net"].values
-    sharpe = float(np.mean(rets) / np.std(rets) * np.sqrt(250)) if np.std(rets) > 0 else 0
+    # Overlap-aware portfolio simulation with fixed per-trade allocation and position cap.
+    alloc_per_trade = float(np.clip(alloc_per_trade, 0.01, 1.0))
+    max_positions = int(max(1, max_positions))
+    equity = float(start_capital)
+    open_positions = []
+    accepted_idx = []
+    event_rows = []
+    for idx, row in df_t.sort_values("entry_date").iterrows():
+        current_day = row["entry_date"]
+        still_open = []
+        for pos in open_positions:
+            if pos["exit_date"] <= current_day:
+                pnl = pos["notional"] * pos["return_net"]
+                equity += pnl
+                event_rows.append((pos["exit_date"], equity))
+            else:
+                still_open.append(pos)
+        open_positions = still_open
+        if len(open_positions) >= max_positions:
+            continue
+        notional = start_capital * alloc_per_trade
+        open_positions.append({
+            "exit_date": row["exit_date"],
+            "notional": notional,
+            "return_net": float(row["return_net"]),
+        })
+        accepted_idx.append(idx)
+    for pos in sorted(open_positions, key=lambda x: x["exit_date"]):
+        pnl = pos["notional"] * pos["return_net"]
+        equity += pnl
+        event_rows.append((pos["exit_date"], equity))
+
+    df_t = df_t.loc[accepted_idx].copy().sort_values("entry_date").reset_index(drop=True)
+    if df_t.empty:
+        return pd.DataFrame(), {}, {}
+    if event_rows:
+        event_df = pd.DataFrame(event_rows, columns=["exit_date", "equity"]).sort_values("exit_date")
+        df_t = df_t.merge(event_df.drop_duplicates(subset=["exit_date"], keep="last"), on="exit_date", how="left")
+        df_t["equity"] = df_t["equity"].ffill().fillna(start_capital)
+    else:
+        df_t["equity"] = start_capital
+    equity_curve=df_t["equity"].values
+    peak=np.maximum.accumulate(equity_curve)
+    dd=(equity_curve-peak)/peak
+
+    # Sharpe based on per-trade daily-equivalent returns.
+    daily_rets = df_t["daily_ret"].astype(float).values
+    sharpe = float(np.mean(daily_rets) / np.std(daily_rets) * np.sqrt(252)) if np.std(daily_rets) > 0 else 0
 
     # Calmar ratio
     max_dd = float(dd.min())
-    ann_ret= float((df_t["equity"].iloc[-1]/start_capital) ** (250/len(df_t)) - 1)
+    elapsed_days = len(pd.bdate_range(df_t["entry_date"].min(), df_t["exit_date"].max()))
+    elapsed_days = max(1, int(elapsed_days))
+    ann_ret= float((df_t["equity"].iloc[-1]/start_capital) ** (252/elapsed_days) - 1)
     calmar = abs(ann_ret / max_dd) if max_dd != 0 else 0
 
     # Expectancy
@@ -1416,8 +1493,8 @@ def run_backtest(raw_data_dict, universe, threshold=0.3,
     for tt in ["SCALP","SWING","POSITION"]:
         sub=df_t[df_t["trade_type"]==tt]
         if len(sub)==0: continue
-        sub_rets=sub["return_net"].values
-        sub_sharpe=float(np.mean(sub_rets)/np.std(sub_rets)*np.sqrt(250)) if np.std(sub_rets)>0 else 0
+        sub_rets=sub["daily_ret"].astype(float).values
+        sub_sharpe=float(np.mean(sub_rets)/np.std(sub_rets)*np.sqrt(252)) if np.std(sub_rets)>0 else 0
         type_stats[tt]={
             "trades":len(sub),"win_rate":f"{sub['win'].mean()*100:.1f}%",
             "avg_ret":f"{sub['return_net'].mean()*100:.2f}%",
@@ -1436,6 +1513,9 @@ def run_backtest(raw_data_dict, universe, threshold=0.3,
         "Expectancy":    f"{expectancy*100:.2f}%",
         "Final Capital": f"Rp {df_t['equity'].iloc[-1]:,.0f}",
         "Total Return":  f"{(df_t['equity'].iloc[-1]/start_capital-1)*100:.1f}%",
+        "Elapsed Days":  elapsed_days,
+        "Signals Skipped (Cap)": int(len(all_trades) - len(df_t)),
+        "Ticker Errors": int(len(errors)),
     }
     return df_t, stats, type_stats
 

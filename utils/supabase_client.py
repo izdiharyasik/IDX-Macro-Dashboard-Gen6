@@ -5,6 +5,30 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 
+def _read_secret(secrets: Dict[str, Any], *keys: str) -> Optional[str]:
+    """Read first matching secret from flat keys or common nested sections."""
+    sections = ("supabase", "SUPABASE")
+    for key in keys:
+        value = secrets.get(key)
+        if value not in (None, ""):
+            return str(value)
+    for section in sections:
+        nested = secrets.get(section)
+        if not isinstance(nested, dict):
+            continue
+        for key in keys:
+            value = nested.get(key)
+            if value not in (None, ""):
+                return str(value)
+            value = nested.get(key.lower())
+            if value not in (None, ""):
+                return str(value)
+            value = nested.get(key.upper())
+            if value not in (None, ""):
+                return str(value)
+    return None
+
+
 def get_supabase_client(secrets: Dict[str, Any]):
     """Create a Supabase client from Streamlit secrets, or return None."""
     try:
@@ -12,8 +36,15 @@ def get_supabase_client(secrets: Dict[str, Any]):
     except Exception:
         return None
 
-    url = secrets.get("SUPABASE_URL") or secrets.get("supabase_url")
-    key = secrets.get("SUPABASE_KEY") or secrets.get("supabase_key") or secrets.get("SUPABASE_ANON_KEY")
+    url = _read_secret(secrets, "SUPABASE_URL", "supabase_url", "url")
+    key = _read_secret(
+        secrets,
+        "SUPABASE_KEY",
+        "supabase_key",
+        "SUPABASE_ANON_KEY",
+        "anon_key",
+        "key",
+    )
     if not url or not key:
         return None
 

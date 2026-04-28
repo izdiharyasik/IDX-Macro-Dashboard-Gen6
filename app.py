@@ -110,6 +110,24 @@ def _fallback_explain_rejection(result, checks, macro_score):
         return "Composite below threshold"
     return "Relative ranking below selected setups"
 
+def _read_secret(*keys, sections=None):
+    """Read first matching key from st.secrets, including optional nested sections."""
+    sections = sections or []
+    for key in keys:
+        value = st.secrets.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    for section in sections:
+        nested = st.secrets.get(section)
+        if not isinstance(nested, dict):
+            continue
+        for key in keys:
+            for candidate in (key, str(key).lower(), str(key).upper()):
+                value = nested.get(candidate)
+                if value not in (None, ""):
+                    return str(value).strip()
+    return ""
+
 def get_timing_model_signal(details, scores, flow_data, context, cpi_yoy=3.0, credit_spread=4.0, accounting_risk=False):
     _ = details, scores, flow_data, context, accounting_risk
     signal = "NEUTRAL"
@@ -245,17 +263,13 @@ with st.sidebar.expander("Model settings", expanded=False):
 with st.sidebar.expander("Alerts and automation", expanded=False):
     auto_send_summary = st.checkbox("Auto-send morning summary", value=False)
     st.caption("Telegram credentials can come from Streamlit secrets.")
-    secret_tg_token = (
-        st.secrets.get("telegram_bot_token")
-        or st.secrets.get("TG_BOT_TOKEN")
-        or st.secrets.get("bot_token")
-        or st.secrets.get("telegram", {}).get("bot_token")
+    secret_tg_token = _read_secret(
+        "telegram_bot_token", "TG_BOT_TOKEN", "bot_token",
+        sections=["telegram", "TELEGRAM"],
     )
-    secret_tg_chat_id = (
-        st.secrets.get("telegram_chat_id")
-        or st.secrets.get("TG_CHAT_ID")
-        or st.secrets.get("chat_id")
-        or st.secrets.get("telegram", {}).get("chat_id")
+    secret_tg_chat_id = _read_secret(
+        "telegram_chat_id", "TG_CHAT_ID", "chat_id",
+        sections=["telegram", "TELEGRAM"],
     )
     tg_token = st.text_input("Bot Token", type="password", value=secret_tg_token or "")
     tg_chat_id = st.text_input("Chat ID", value=secret_tg_chat_id or "")
@@ -285,10 +299,10 @@ supabase_client = get_supabase_client(st.secrets)
 supabase_configured = supabase_client is not None
 if not supabase_configured:
     st.info("Supabase is not configured. Margin debt, earnings log, and portfolio heat will use local fallback mode.")
-    raw_supabase_url = str(st.secrets.get("SUPABASE_URL", st.secrets.get("supabase_url", ""))).strip()
+    raw_supabase_url = _read_secret("SUPABASE_URL", "supabase_url", "url", sections=["supabase", "SUPABASE"])
     if "/rest/v1" in raw_supabase_url:
         st.caption("Tip: use project URL without `/rest/v1` in `SUPABASE_URL`.")
-fred_api_key = str(st.secrets.get("FRED_API_KEY", "")).strip()
+fred_api_key = _read_secret("FRED_API_KEY", "fred_api_key", "api_key", sections=["fred", "FRED"])
 fred_bundle = load_fred_bundle(fred_api_key)
 
 fred_unavailable = not bool(fred_bundle) or all(not v for v in fred_bundle.values())
