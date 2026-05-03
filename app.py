@@ -1,5 +1,6 @@
 import warnings
 warnings.filterwarnings("ignore")
+import inspect
 
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -40,6 +41,31 @@ from trade_journal import (
 from signal_tracker import (
     register_signals_from_plan, update_signal_statuses, compute_signal_performance,
 )
+
+def _run_execution_plan_with_compat(results, macro_score, regime, allocation, portfolio_value,
+                                    rr_ratio, raw_data, hb_plays, threshold, all_scores,
+                                    risk_pct_input, flow_data, macro_alignment_score,
+                                    us_max_pct, usd_idr_rate):
+    kwargs = dict(
+        results=results,
+        macro_score=macro_score,
+        regime=regime,
+        allocation=allocation,
+        portfolio_value=portfolio_value,
+        rr_ratio=rr_ratio,
+        raw_data=raw_data,
+        high_beta_plays=hb_plays,
+        threshold=threshold,
+        screen_rows=all_scores,
+        risk_pct=risk_pct_input,
+        sector_flow=flow_data,
+        macro_alignment=macro_alignment_score,
+        us_max_pct=us_max_pct,
+        usd_idr_rate=usd_idr_rate,
+    )
+    sig = inspect.signature(build_execution_plan)
+    filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    return build_execution_plan(**filtered)
 
 if not hasattr(st, "_orig_line_chart_fn"):
     st._orig_line_chart_fn = st.line_chart
@@ -242,13 +268,14 @@ with st.sidebar.expander("Universe and filters", expanded=True):
     use_sector = st.checkbox("Limit screen to recommended sector", value=False)
     rr_ratio = st.slider("Risk/Reward Ratio", 1.0, 4.0, 2.0, 0.5)
     high_beta_pct = st.slider("High-Beta capital %", 0, 30, 15) / 100
+    us_max_pct = st.slider("US max allocation %", 0, 100, 35, 5) / 100
     sharia_only = st.checkbox("☪️ Sharia compliant only", value=False)
     selected_universe = st.radio(
         "Universe",
-        options=["IDX", "LQ45", "Gorengan", "All"],
+        options=["IDX", "LQ45", "US", "Global Mix", "Gorengan", "All"],
         index=0,
         horizontal=True,
-        help="IDX: ~50 blue chips | LQ45: top 45 liquid | Gorengan: high-beta small caps ⚠️ | All: everything"
+        help="IDX: ~50 blue chips | LQ45: top 45 liquid | US: mega/large-cap names | Global Mix: IDX + US | Gorengan: high-beta small caps ⚠️ | All: IDX + Gorengan"
     )
     use_auto = st.checkbox("Use auto threshold", value=True)
 
@@ -340,6 +367,7 @@ if len(fed_values) >= 3:
 macro_score, stance, scores, details = load_macro()
 macro_alignment_score, macro_conf_level, macro_breakdown = get_macro_alignment(scores)
 commodity_context                    = load_commodities()
+usd_idr_rate = float((commodity_context.get("USD/IDR", {}) or {}).get("value", 16000) or 16000)
 regime, regime_conf, regime_reason   = detect_regime(scores, details, commodity_context)
 allocation                           = get_allocation(regime, macro_score)
 rec_sector, rec_reason, signals      = recommend_sector(macro_score, scores, commodity_context)
@@ -379,7 +407,14 @@ earnings_rows, _ = safe_select(supabase_client, "earnings_log", columns="ticker,
 earnings_df = pd.DataFrame(earnings_rows) if earnings_rows else pd.DataFrame(columns=["ticker", "eps_actual", "eps_estimate", "revenue_beat"])
 if not earnings_df.empty:
     earnings_df["beat"] = earnings_df.apply(lambda r: (r.get("eps_actual", 0) or 0) > (r.get("eps_estimate", 0) or 0), axis=1)
-leading_tickers = set((SECTORS.get(rec_sector, {}) or {}).get("T1", [])[:3])
+_sector_raw = SECTORS.get(rec_sector, []) or []
+if isinstance(_sector_raw, dict):
+    _sector_raw = (
+        _sector_raw.get("T1", [])
+        + _sector_raw.get("T2", [])
+        + _sector_raw.get("T3", [])
+    )
+leading_tickers = set(list(_sector_raw)[:3])
 earnings_beats = int(earnings_df[earnings_df["ticker"].isin(leading_tickers)]["beat"].sum()) if (not earnings_df.empty and "ticker" in earnings_df.columns) else 0
 
 sector_leader_text = f"{rec_sector} leader"
@@ -622,17 +657,15 @@ if flow_data:
     )
 
 # Sector action translator
-tier_data=SECTORS[rec_sector]
+sector_stocks=SECTORS[rec_sector]
 st.subheader(f"🎯 Sector Action: {rec_sector}")
 sector_action=sector_action_translator(rec_sector,macro_score,scores,commodity_context,flow_data)
 action_color={"STRONG":"success","MODERATE":"info","WEAK":"warning","AVOID":"error"}.get(
     sector_action["strength"],"info")
 getattr(st,action_color)(f"**{sector_action['strength']}** — Flow score: {sector_action['flow_score']:+.2f}")
 st.markdown(sector_action["strategy"])
-c1,c2,c3=st.columns(3)
-c1.markdown("🥇 **Tier 1**\n\n"+"\n\n".join(tier_data["T1"]))
-c2.markdown("🥈 **Tier 2**\n\n"+"\n\n".join(tier_data["T2"]))
-c3.markdown("🥉 **Tier 3**\n\n"+"\n\n".join(tier_data["T3"]))
+st.markdown("**Sector watchlist**")
+st.markdown(" • " + "\n • ".join(sector_stocks))
 
 # ═══════════════════════════════════════════════════════════
 # 3. MOMENTUM SCREEN
@@ -640,13 +673,13 @@ c3.markdown("🥉 **Tier 3**\n\n"+"\n\n".join(tier_data["T3"]))
 st.header("3. Universe Scanner")
 _base_universe = resolve_universe(selected_universe)
 scan_universe = (
-    tier_data["T1"] + tier_data["T2"] + tier_data["T3"]
+    sector_stocks
     if use_sector
     else _base_universe
 )
-# Always ensure recommended sector T1 stocks are in the scan universe
+# Always ensure recommended sector stocks are in the scan universe
 # so they have data available for the execution plan
-_sector_stocks = tier_data["T1"] + tier_data["T2"]
+_sector_stocks = sector_stocks
 for _s in _sector_stocks:
     if _s not in scan_universe:
         scan_universe = list(scan_universe) + [_s]
@@ -711,11 +744,11 @@ custom=st.multiselect("Override candidates:",options=scan_universe,default=defau
 final_candidates=custom if custom else top_candidates
 if sharia_only: final_candidates=[t for t in final_candidates if SHARIA_COMPLIANT.get(t,True)]
 
-# ── SECTOR INJECTION: always include recommended sector T1/T2 in execution analysis ──
+# ── SECTOR INJECTION: always include recommended sector stocks in execution analysis ──
 # This fixes the "sector recommends Commodities but Execution tab is empty" bug
 if sector_action["strength"] in ("STRONG", "MODERATE") and not use_sector:
     all_screened_tickers = set(all_scores["ticker"].tolist())
-    sector_must_include  = tier_data["T1"] + tier_data["T2"]
+    sector_must_include  = sector_stocks
     injected = []
     for s in sector_must_include:
         if s not in final_candidates:
@@ -748,10 +781,12 @@ if st.button(f"⚡ Run Deep Analysis on {len(final_candidates)} stocks"):
     with st.spinner("Running full analysis — grab a coffee ☕"):
         results=run_full_analysis(final_candidates,macro_score,regime,
                                    raw_data,all_scores,active_weights)
-        plan=build_execution_plan(results,macro_score,regime,allocation,
-                                   portfolio_value,rr_ratio,raw_data,
-                                   hb_plays,threshold,all_scores,risk_pct_input,
-                                   flow_data,macro_alignment_score)
+        plan=_run_execution_plan_with_compat(
+            results, macro_score, regime, allocation, portfolio_value,
+            rr_ratio, raw_data, hb_plays, threshold, all_scores,
+            risk_pct_input, flow_data, macro_alignment_score,
+            us_max_pct, usd_idr_rate
+        )
         created_signals = register_signals_from_plan(plan)
         if created_signals:
             st.success(f"📡 Signal tracker updated: {created_signals} new signal(s) persisted.")
@@ -762,6 +797,7 @@ if st.button(f"⚡ Run Deep Analysis on {len(final_candidates)} stocks"):
             "rr_ratio": rr_ratio,
             "threshold": threshold,
             "high_beta_pct": high_beta_pct,
+            "us_max_pct": us_max_pct,
         }
         st.session_state.update({"results":results,"plan":plan,
                                   "macro_score":macro_score,"regime":regime,
@@ -794,6 +830,7 @@ current_inputs = {
     "rr_ratio": rr_ratio,
     "threshold": threshold,
     "high_beta_pct": high_beta_pct,
+    "us_max_pct": us_max_pct,
 }
 if saved_inputs and saved_inputs != current_inputs:
     old_port = saved_inputs.get("portfolio_value", 0)
@@ -1119,8 +1156,7 @@ with tab5:
                 "Expiry":      t.get("order_expiry",""),
                 "Note":        "⚠️ Capped" if t.get("was_capped") else "",
             })
-            amount_num = float(str(t["amount"]).replace("Rp","").replace(",","").strip() or 0)
-            total_deployed += amount_num
+            total_deployed += float(t.get("pct_raw", 0.0)) * float(analysis_portfolio_value)
 
     # High-beta trades
     for t in plan.get("HIGH_BETA", []):
@@ -1140,8 +1176,7 @@ with tab5:
             "Expiry":     t.get("order_expiry",""),
             "Note":       "HIGH BETA",
         })
-        amount_num = float(str(t["amount"]).replace("Rp","").replace(",","").strip() or 0)
-        total_deployed += amount_num
+        total_deployed += float(t.get("pct_raw", 0.0)) * float(analysis_portfolio_value)
 
     # Watchlist — stocks that did NOT make the plan
     plan_tickers = {t["ticker"] for bucket in ["POSITION","SWING","SCALP","HIGH_BETA"]
@@ -1179,6 +1214,8 @@ with tab5:
     c2.metric("Total Deployed", f"Rp {summary.get('total_deployed',0):,.0f}")
     c3.metric("% Deployed",     f"{summary.get('pct_deployed',0):.1f}%")
     c4.metric("Max risk/trade", f"Rp {analysis_portfolio_value*analysis_risk_pct_input:,.0f}")
+    us_pct_summary = float(plan.get("_summary", {}).get("us_pct", 0.0))
+    st.caption(f"US allocation used: {us_pct_summary:.2f}% of portfolio")
 
     # Sanity check — should never exceed 100% now
     pct = summary.get("pct_deployed", 0)
