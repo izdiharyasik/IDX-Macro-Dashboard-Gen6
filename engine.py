@@ -214,11 +214,11 @@ def resolve_universe(universe_name: str = "IDX") -> list:
         return IDX_UNIVERSE  # safe fallback
 
 SECTORS = {
-    "Energy":      {"T1":["ADRO.JK","ITMG.JK","PTBA.JK"],"T2":["MEDC.JK","INDY.JK"],"T3":["HRUM.JK","BYAN.JK"]},
-    "Banks":       {"T1":["BBCA.JK","BBRI.JK"],           "T2":["BMRI.JK"],           "T3":["BBNI.JK"]},
-    "Commodities": {"T1":["ANTM.JK","INCO.JK"],           "T2":["MDKA.JK"],           "T3":["MBMA.JK"]},
-    "Defensive":   {"T1":["ICBP.JK"],                     "T2":["UNVR.JK"],           "T3":["MYOR.JK"]},
-    "Tech":        {"T1":["GOTO.JK"],                     "T2":["EMTK.JK"],           "T3":["BUKA.JK"]},
+    "Energy":      ["ADRO.JK","ITMG.JK","PTBA.JK","MEDC.JK","INDY.JK","HRUM.JK","BYAN.JK"],
+    "Banks":       ["BBCA.JK","BBRI.JK","BMRI.JK","BBNI.JK"],
+    "Commodities": ["ANTM.JK","INCO.JK","MDKA.JK","MBMA.JK"],
+    "Defensive":   ["ICBP.JK","UNVR.JK","MYOR.JK"],
+    "Tech":        ["GOTO.JK","EMTK.JK","BUKA.JK"],
 }
 
 COMPANY_NAMES = {
@@ -568,10 +568,10 @@ def sector_action_translator(sector, macro_score, scores, commodity_context, mon
     Converts "Energy is bullish" into specific execution instructions.
     Returns: breakout names, pullback names, ignore names, strategy text.
     """
-    tier_data = SECTORS.get(sector, {})
-    t1 = tier_data.get("T1", [])
-    t2 = tier_data.get("T2", [])
-    t3 = tier_data.get("T3", [])
+    watchlist = SECTORS.get(sector, [])
+    leaders = watchlist[:3]
+    secondary = watchlist[3:6]
+    tail = watchlist[6:]
 
     flow = money_flow.get(sector, {})
     flow_score = flow.get("score", 0)
@@ -590,37 +590,37 @@ def sector_action_translator(sector, macro_score, scores, commodity_context, mon
     if strength == "STRONG":
         strategy = (
             f"**{sector} is in STRONG inflow ({flow.get('5d_return','?')}).**\n\n"
-            f"🚀 **Breakouts → BUY NOW:** Focus {', '.join(t1[:2])} — lead names with volume.\n"
-            f"🎯 **Pullbacks → LIMIT ORDER:** {', '.join(t2[:1])} on dips to MA20.\n"
-            f"⚠️ **Speculative only:** {', '.join(t3[:1])} — smaller size, tighter SL.\n\n"
-            f"**Entry type:** Buy stop above yesterday's high on T1 names."
+            f"🚀 **Breakouts → BUY NOW:** Focus {', '.join(leaders[:2])} — lead names with volume.\n"
+            f"🎯 **Pullbacks → LIMIT ORDER:** {', '.join(secondary[:1])} on dips to MA20.\n"
+            f"⚠️ **Speculative only:** {', '.join(tail[:1])} — smaller size, tighter SL.\n\n"
+            f"**Entry type:** Buy stop above yesterday's high on top liquid names."
         )
-        breakouts = t1
-        pullbacks = t2
+        breakouts = leaders
+        pullbacks = secondary
         ignore    = []
 
     elif strength == "MODERATE":
         strategy = (
             f"**{sector} is MODERATE ({flow.get('5d_return','?')}).**\n\n"
-            f"🎯 **Pullbacks only → LIMIT ORDER:** {', '.join(t1[:2])} on MA20 touch.\n"
-            f"👀 **Watch:** {', '.join(t2[:1])} — wait for volume confirmation.\n"
-            f"🚫 **Ignore:** {', '.join(t3)} — too risky in moderate flow.\n\n"
+            f"🎯 **Pullbacks only → LIMIT ORDER:** {', '.join(leaders[:2])} on MA20 touch.\n"
+            f"👀 **Watch:** {', '.join(secondary[:1])} — wait for volume confirmation.\n"
+            f"🚫 **Ignore:** {', '.join(tail)} — too risky in moderate flow.\n\n"
             f"**Entry type:** Limit orders only. Don't chase breakouts."
         )
         breakouts = []
-        pullbacks = t1
-        ignore    = t3
+        pullbacks = leaders
+        ignore    = tail
 
     elif strength == "WEAK":
         strategy = (
             f"**{sector} is WEAK ({flow.get('5d_return','?')}). Don't force trades.**\n\n"
-            f"👀 **Watch only:** {', '.join(t1[:1])} — wait for regime shift.\n"
-            f"🚫 **Ignore:** {', '.join(t2 + t3)} — outflows active.\n\n"
+            f"👀 **Watch only:** {', '.join(leaders[:1])} — wait for regime shift.\n"
+            f"🚫 **Ignore:** {', '.join(secondary + tail)} — outflows active.\n\n"
             f"**Entry type:** No new entries. Protect existing positions."
         )
         breakouts = []
         pullbacks = []
-        ignore    = t2 + t3
+        ignore    = secondary + tail
 
     else:  # AVOID
         strategy = (
@@ -1217,13 +1217,13 @@ def trade_checklist(result, macro_score, regime, threshold=0.25):
 
 ticker_to_sector={}
 for _s,_t in SECTORS.items():
-    for _tk in _t["T1"]+_t["T2"]+_t["T3"]: ticker_to_sector[_tk]=_s
+    for _tk in _t: ticker_to_sector[_tk]=_s
 
 def build_execution_plan(results, macro_score, regime, allocation,
                          portfolio_value, rr_ratio, raw_data,
                          high_beta_plays, threshold=0.25,
                          screen_rows=None, risk_pct=0.01, sector_flow=None,
-                         macro_alignment=None):
+                         macro_alignment=None, us_max_pct=0.35):
 
     budget_map       = allocate_trades_by_sector(allocation, portfolio_value)
     sector_budgets   = budget_map["sector_budgets"]
@@ -1233,6 +1233,8 @@ def build_execution_plan(results, macro_score, regime, allocation,
     # Hard cap: total deployed can never exceed investable capital
     MAX_TOTAL_DEPLOY = investable
     total_deployed   = 0.0
+    us_deployed      = 0.0
+    us_cap_value     = float(portfolio_value) * float(us_max_pct)
 
     # Trade type caps (% of investable)
     type_caps = {k: investable * v for k, v in TRADE_ALLOCATION_CAPS.items()}
@@ -1299,6 +1301,9 @@ def build_execution_plan(results, macro_score, regime, allocation,
                 "was_capped": True,
             }
 
+        if is_us and (us_deployed + actual_cost > us_cap_value):
+            continue
+
         playbook = r.get("playbook", {})
         conf_score, conf_label = compute_trade_confidence(
             r,
@@ -1329,6 +1334,8 @@ def build_execution_plan(results, macro_score, regime, allocation,
         plan[trade_type].append(entry_obj)
         type_used[trade_type] = type_used.get(trade_type, 0) + actual_cost
         total_deployed += actual_cost
+        if is_us:
+            us_deployed += actual_cost
 
     # High-beta — only if budget remaining
     per_hb = high_beta_budget / max(len(high_beta_plays), 1)
@@ -1361,6 +1368,9 @@ def build_execution_plan(results, macro_score, regime, allocation,
             sizing["amount_idr"] = f"{ccy}{actual_cost:,.2f}"
             sizing["pct_raw"]    = actual_cost / portfolio_value
 
+        if is_us and (us_deployed + actual_cost > us_cap_value):
+            continue
+
         plan["HIGH_BETA"].append({
             "ticker":hb["ticker"],"sector":ticker_to_sector.get(hb["ticker"],"Unknown"),
             "trade_type":"SCALP","composite":hb["beta_score"],
@@ -1377,12 +1387,16 @@ def build_execution_plan(results, macro_score, regime, allocation,
             "sharia":hb.get("sharia",True),"high_beta":True,
         })
         total_deployed += actual_cost
+        if is_us:
+            us_deployed += actual_cost
 
     plan["_summary"] = {
         "total_deployed": round(total_deployed, 0),
         "pct_deployed":   round(total_deployed / portfolio_value * 100, 1),
         "cash_reserve":   round(budget_map["cash_reserve"], 0),
         "trade_count":    sum(len(v) for k, v in plan.items() if not k.startswith("_")),
+        "us_deployed": round(us_deployed, 2),
+        "us_pct": round((us_deployed / portfolio_value) * 100, 2) if portfolio_value else 0.0,
         "type_allocation":{k: round(v/investable*100,1) for k,v in type_used.items() if investable>0},
     }
     return plan
