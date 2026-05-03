@@ -1,5 +1,6 @@
 import warnings
 warnings.filterwarnings("ignore")
+import inspect
 
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -40,6 +41,31 @@ from trade_journal import (
 from signal_tracker import (
     register_signals_from_plan, update_signal_statuses, compute_signal_performance,
 )
+
+def _run_execution_plan_with_compat(results, macro_score, regime, allocation, portfolio_value,
+                                    rr_ratio, raw_data, hb_plays, threshold, all_scores,
+                                    risk_pct_input, flow_data, macro_alignment_score,
+                                    us_max_pct, usd_idr_rate):
+    kwargs = dict(
+        results=results,
+        macro_score=macro_score,
+        regime=regime,
+        allocation=allocation,
+        portfolio_value=portfolio_value,
+        rr_ratio=rr_ratio,
+        raw_data=raw_data,
+        high_beta_plays=hb_plays,
+        threshold=threshold,
+        screen_rows=all_scores,
+        risk_pct=risk_pct_input,
+        sector_flow=flow_data,
+        macro_alignment=macro_alignment_score,
+        us_max_pct=us_max_pct,
+        usd_idr_rate=usd_idr_rate,
+    )
+    sig = inspect.signature(build_execution_plan)
+    filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    return build_execution_plan(**filtered)
 
 if not hasattr(st, "_orig_line_chart_fn"):
     st._orig_line_chart_fn = st.line_chart
@@ -755,10 +781,12 @@ if st.button(f"⚡ Run Deep Analysis on {len(final_candidates)} stocks"):
     with st.spinner("Running full analysis — grab a coffee ☕"):
         results=run_full_analysis(final_candidates,macro_score,regime,
                                    raw_data,all_scores,active_weights)
-        plan=build_execution_plan(results,macro_score,regime,allocation,
-                                   portfolio_value,rr_ratio,raw_data,
-                                   hb_plays,threshold,all_scores,risk_pct_input,
-                                   flow_data,macro_alignment_score,us_max_pct,usd_idr_rate)
+        plan=_run_execution_plan_with_compat(
+            results, macro_score, regime, allocation, portfolio_value,
+            rr_ratio, raw_data, hb_plays, threshold, all_scores,
+            risk_pct_input, flow_data, macro_alignment_score,
+            us_max_pct, usd_idr_rate
+        )
         created_signals = register_signals_from_plan(plan)
         if created_signals:
             st.success(f"📡 Signal tracker updated: {created_signals} new signal(s) persisted.")
