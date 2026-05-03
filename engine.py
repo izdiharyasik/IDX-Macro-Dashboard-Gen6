@@ -630,7 +630,7 @@ def sector_action_translator(sector, macro_score, scores, commodity_context, mon
         )
         breakouts = []
         pullbacks = []
-        ignore    = t1 + t2 + t3
+        ignore    = leaders + secondary + tail
 
     return {
         "strength":   strength,
