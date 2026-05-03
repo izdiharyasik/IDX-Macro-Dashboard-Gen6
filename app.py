@@ -380,7 +380,14 @@ earnings_rows, _ = safe_select(supabase_client, "earnings_log", columns="ticker,
 earnings_df = pd.DataFrame(earnings_rows) if earnings_rows else pd.DataFrame(columns=["ticker", "eps_actual", "eps_estimate", "revenue_beat"])
 if not earnings_df.empty:
     earnings_df["beat"] = earnings_df.apply(lambda r: (r.get("eps_actual", 0) or 0) > (r.get("eps_estimate", 0) or 0), axis=1)
-leading_tickers = set((SECTORS.get(rec_sector, []) or [])[:3])
+_sector_raw = SECTORS.get(rec_sector, []) or []
+if isinstance(_sector_raw, dict):
+    _sector_raw = (
+        _sector_raw.get("T1", [])
+        + _sector_raw.get("T2", [])
+        + _sector_raw.get("T3", [])
+    )
+leading_tickers = set(list(_sector_raw)[:3])
 earnings_beats = int(earnings_df[earnings_df["ticker"].isin(leading_tickers)]["beat"].sum()) if (not earnings_df.empty and "ticker" in earnings_df.columns) else 0
 
 sector_leader_text = f"{rec_sector} leader"
