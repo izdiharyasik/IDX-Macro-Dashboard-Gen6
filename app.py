@@ -245,10 +245,10 @@ with st.sidebar.expander("Universe and filters", expanded=True):
     sharia_only = st.checkbox("☪️ Sharia compliant only", value=False)
     selected_universe = st.radio(
         "Universe",
-        options=["IDX", "LQ45", "Gorengan", "All"],
+        options=["IDX", "LQ45", "US", "Global Mix", "Gorengan", "All"],
         index=0,
         horizontal=True,
-        help="IDX: ~50 blue chips | LQ45: top 45 liquid | Gorengan: high-beta small caps ⚠️ | All: everything"
+        help="IDX: ~50 blue chips | LQ45: top 45 liquid | US: mega/large-cap names | Global Mix: IDX + US | Gorengan: high-beta small caps ⚠️ | All: IDX + Gorengan"
     )
     use_auto = st.checkbox("Use auto threshold", value=True)
 
