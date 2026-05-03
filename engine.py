@@ -159,6 +159,24 @@ LQ45_UNIVERSE = [
     "MBMA.JK","EMTK.JK","ESSA.JK",
 ]
 
+
+US_UNIVERSE = [
+    # Mega-cap leaders (deep liquidity, strong trend persistence)
+    "AAPL","MSFT","NVDA","AMZN","GOOGL","META","AVGO","TSLA","BRK-B","LLY",
+    # Financials
+    "JPM","BAC","WFC","GS","MS","BLK","SCHW","C",
+    # Semis / AI infra
+    "AMD","QCOM","MU","TXN","INTC","AMAT","LRCX","KLAC","ANET","SMCI",
+    # Software / internet platforms
+    "NFLX","CRM","ORCL","ADBE","NOW","UBER","SHOP","PLTR","PANW","CRWD",
+    # Health care / biotech
+    "JNJ","UNH","ABBV","MRK","PFE","TMO","ISRG","VRTX",
+    # Consumer + defensives
+    "WMT","COST","HD","MCD","NKE","SBUX","KO","PEP","PG","PM",
+    # Industrials / energy / cyclicals
+    "XOM","CVX","SLB","CAT","GE","RTX","BA","DE","ETN","HON",
+]
+
 # Gorengan / Scalping Universe — high beta, small-mid cap, volatile
 # ⚠️ HIGH RISK — suitable for scalp/momentum plays only
 GORENGAN_UNIVERSE = [
@@ -175,27 +193,32 @@ GORENGAN_UNIVERSE = [
 def resolve_universe(universe_name: str = "IDX") -> list:
     """
     Returns list of tickers based on selected universe.
-    Options: 'LQ45', 'IDX', 'Gorengan', 'All'
+    Options: 'LQ45', 'IDX', 'US', 'Gorengan', 'All', 'Global Mix'
     """
     name = str(universe_name).upper().strip()
     if name == "LQ45":
         return LQ45_UNIVERSE
     elif name in ("IDX", "IDX80"):
         return IDX_UNIVERSE
+    elif name == "US":
+        return US_UNIVERSE
     elif name == "GORENGAN":
         return GORENGAN_UNIVERSE
     elif name == "ALL":
         combined = list(set(IDX_UNIVERSE + GORENGAN_UNIVERSE))
         return sorted(combined)
+    elif name in ("GLOBAL MIX", "GLOBAL", "MIX"):
+        combined = list(set(IDX_UNIVERSE + US_UNIVERSE))
+        return sorted(combined)
     else:
         return IDX_UNIVERSE  # safe fallback
 
 SECTORS = {
-    "Energy":      {"T1":["ADRO.JK","ITMG.JK","PTBA.JK"],"T2":["MEDC.JK","INDY.JK"],"T3":["HRUM.JK","BYAN.JK"]},
-    "Banks":       {"T1":["BBCA.JK","BBRI.JK"],           "T2":["BMRI.JK"],           "T3":["BBNI.JK"]},
-    "Commodities": {"T1":["ANTM.JK","INCO.JK"],           "T2":["MDKA.JK"],           "T3":["MBMA.JK"]},
-    "Defensive":   {"T1":["ICBP.JK"],                     "T2":["UNVR.JK"],           "T3":["MYOR.JK"]},
-    "Tech":        {"T1":["GOTO.JK"],                     "T2":["EMTK.JK"],           "T3":["BUKA.JK"]},
+    "Energy":      ["ADRO.JK","ITMG.JK","PTBA.JK","MEDC.JK","INDY.JK","HRUM.JK","BYAN.JK"],
+    "Banks":       ["BBCA.JK","BBRI.JK","BMRI.JK","BBNI.JK"],
+    "Commodities": ["ANTM.JK","INCO.JK","MDKA.JK","MBMA.JK"],
+    "Defensive":   ["ICBP.JK","UNVR.JK","MYOR.JK"],
+    "Tech":        ["GOTO.JK","EMTK.JK","BUKA.JK"],
 }
 
 COMPANY_NAMES = {
@@ -545,10 +568,10 @@ def sector_action_translator(sector, macro_score, scores, commodity_context, mon
     Converts "Energy is bullish" into specific execution instructions.
     Returns: breakout names, pullback names, ignore names, strategy text.
     """
-    tier_data = SECTORS.get(sector, {})
-    t1 = tier_data.get("T1", [])
-    t2 = tier_data.get("T2", [])
-    t3 = tier_data.get("T3", [])
+    watchlist = SECTORS.get(sector, [])
+    leaders = watchlist[:3]
+    secondary = watchlist[3:6]
+    tail = watchlist[6:]
 
     flow = money_flow.get(sector, {})
     flow_score = flow.get("score", 0)
@@ -567,37 +590,37 @@ def sector_action_translator(sector, macro_score, scores, commodity_context, mon
     if strength == "STRONG":
         strategy = (
             f"**{sector} is in STRONG inflow ({flow.get('5d_return','?')}).**\n\n"
-            f"🚀 **Breakouts → BUY NOW:** Focus {', '.join(t1[:2])} — lead names with volume.\n"
-            f"🎯 **Pullbacks → LIMIT ORDER:** {', '.join(t2[:1])} on dips to MA20.\n"
-            f"⚠️ **Speculative only:** {', '.join(t3[:1])} — smaller size, tighter SL.\n\n"
-            f"**Entry type:** Buy stop above yesterday's high on T1 names."
+            f"🚀 **Breakouts → BUY NOW:** Focus {', '.join(leaders[:2])} — lead names with volume.\n"
+            f"🎯 **Pullbacks → LIMIT ORDER:** {', '.join(secondary[:1])} on dips to MA20.\n"
+            f"⚠️ **Speculative only:** {', '.join(tail[:1])} — smaller size, tighter SL.\n\n"
+            f"**Entry type:** Buy stop above yesterday's high on top liquid names."
         )
-        breakouts = t1
-        pullbacks = t2
+        breakouts = leaders
+        pullbacks = secondary
         ignore    = []
 
     elif strength == "MODERATE":
         strategy = (
             f"**{sector} is MODERATE ({flow.get('5d_return','?')}).**\n\n"
-            f"🎯 **Pullbacks only → LIMIT ORDER:** {', '.join(t1[:2])} on MA20 touch.\n"
-            f"👀 **Watch:** {', '.join(t2[:1])} — wait for volume confirmation.\n"
-            f"🚫 **Ignore:** {', '.join(t3)} — too risky in moderate flow.\n\n"
+            f"🎯 **Pullbacks only → LIMIT ORDER:** {', '.join(leaders[:2])} on MA20 touch.\n"
+            f"👀 **Watch:** {', '.join(secondary[:1])} — wait for volume confirmation.\n"
+            f"🚫 **Ignore:** {', '.join(tail)} — too risky in moderate flow.\n\n"
             f"**Entry type:** Limit orders only. Don't chase breakouts."
         )
         breakouts = []
-        pullbacks = t1
-        ignore    = t3
+        pullbacks = leaders
+        ignore    = tail
 
     elif strength == "WEAK":
         strategy = (
             f"**{sector} is WEAK ({flow.get('5d_return','?')}). Don't force trades.**\n\n"
-            f"👀 **Watch only:** {', '.join(t1[:1])} — wait for regime shift.\n"
-            f"🚫 **Ignore:** {', '.join(t2 + t3)} — outflows active.\n\n"
+            f"👀 **Watch only:** {', '.join(leaders[:1])} — wait for regime shift.\n"
+            f"🚫 **Ignore:** {', '.join(secondary + tail)} — outflows active.\n\n"
             f"**Entry type:** No new entries. Protect existing positions."
         )
         breakouts = []
         pullbacks = []
-        ignore    = t2 + t3
+        ignore    = secondary + tail
 
     else:  # AVOID
         strategy = (
@@ -607,7 +630,7 @@ def sector_action_translator(sector, macro_score, scores, commodity_context, mon
         )
         breakouts = []
         pullbacks = []
-        ignore    = t1 + t2 + t3
+        ignore    = leaders + secondary + tail
 
     return {
         "strength":   strength,
@@ -1052,7 +1075,7 @@ def get_high_beta_plays(raw_data_dict, top_n=3):
 # ═══════════════════════════════════════════════════════════
 def risk_based_sizing(entry_price, stop_loss_price, portfolio_value,
                       risk_pct=0.01, regime="NEUTRAL", trade_type="SWING",
-                      max_position_pct=0.05):
+                      max_position_pct=0.05, is_fractional=False, currency_symbol="Rp ", lot_size=100):
     """
     1% risk rule with TWO hard caps:
     1. Max single position = max_position_pct of portfolio (default 5%)
@@ -1067,35 +1090,38 @@ def risk_based_sizing(entry_price, stop_loss_price, portfolio_value,
 
     risk_budget    = portfolio_value * risk_pct * regime_mult * type_mult
     risk_per_share = entry_price - stop_loss_price
-    risk_per_lot   = risk_per_share * 100
+    unit_size = 1.0 if is_fractional else float(lot_size)
+    risk_per_lot   = risk_per_share * unit_size
 
     if risk_per_lot <= 0:
         return {"lots":0,"amount_idr":"—","risk_idr":"—","risk_pct":"—","pct_raw":0.0,"label":"Zero risk/lot"}
 
     # Cap 1: from risk rule
-    lots_risk = int(risk_budget // risk_per_lot)
+    lots_risk = (risk_budget / risk_per_lot) if is_fractional else int(risk_budget // risk_per_lot)
 
     # Cap 2: hard position size cap — never more than max_position_pct of portfolio
     max_value  = portfolio_value * max_position_pct
-    lots_cap   = int(max_value // (entry_price * 100))
+    lots_cap   = (max_value / (entry_price * unit_size)) if is_fractional else int(max_value // (entry_price * unit_size))
 
     lots = min(lots_risk, lots_cap)
+    if is_fractional:
+        lots = round(float(lots), 4)
     if lots <= 0:
-        return {"lots":0,"amount_idr":"—","risk_idr":f"Rp {risk_budget:,.0f}",
+        return {"lots":0,"amount_idr":"—","risk_idr":f"{currency_symbol}{risk_budget:,.2f}",
                 "risk_pct":"—","pct_raw":0.0,
-                "label":f"Min 1 lot = Rp {entry_price*100:,.0f}"}
+                "label":f"Min 1 unit = {currency_symbol}{entry_price*unit_size:,.2f}"}
 
-    actual_cost = lots * entry_price * 100
+    actual_cost = lots * entry_price * unit_size
     actual_risk = lots * risk_per_lot
     capped      = lots < lots_risk  # was the cap triggered?
 
     return {
         "lots":       lots,
-        "amount_idr": f"Rp {actual_cost:,.0f}",
-        "risk_idr":   f"Rp {actual_risk:,.0f}",
+        "amount_idr": f"{currency_symbol}{actual_cost:,.2f}",
+        "risk_idr":   f"{currency_symbol}{actual_risk:,.2f}",
         "risk_pct":   f"{actual_risk/portfolio_value*100:.2f}% of portfolio",
         "label":      f"{'⚠️ Size-capped at {:.0f}%'.format(max_position_pct*100) if capped else 'Risk-sized'}",
-        "pct_raw":    actual_cost / portfolio_value,
+        "pct_raw":    actual_cost_idr / portfolio_value,
         "was_capped": capped,
     }
 
@@ -1191,13 +1217,13 @@ def trade_checklist(result, macro_score, regime, threshold=0.25):
 
 ticker_to_sector={}
 for _s,_t in SECTORS.items():
-    for _tk in _t["T1"]+_t["T2"]+_t["T3"]: ticker_to_sector[_tk]=_s
+    for _tk in _t: ticker_to_sector[_tk]=_s
 
 def build_execution_plan(results, macro_score, regime, allocation,
                          portfolio_value, rr_ratio, raw_data,
                          high_beta_plays, threshold=0.25,
                          screen_rows=None, risk_pct=0.01, sector_flow=None,
-                         macro_alignment=None):
+                         macro_alignment=None, us_max_pct=0.35, usd_idr_rate=16000.0):
 
     budget_map       = allocate_trades_by_sector(allocation, portfolio_value)
     sector_budgets   = budget_map["sector_budgets"]
@@ -1207,6 +1233,9 @@ def build_execution_plan(results, macro_score, regime, allocation,
     # Hard cap: total deployed can never exceed investable capital
     MAX_TOTAL_DEPLOY = investable
     total_deployed   = 0.0
+    us_deployed      = 0.0
+    us_cap_value     = float(portfolio_value) * float(us_max_pct)
+    usd_idr_rate     = max(float(usd_idr_rate or 16000.0), 1.0)
 
     # Trade type caps (% of investable)
     type_caps = {k: investable * v for k, v in TRADE_ALLOCATION_CAPS.items()}
@@ -1242,30 +1271,42 @@ def build_execution_plan(results, macro_score, regime, allocation,
         remaining = MAX_TOTAL_DEPLOY - total_deployed
         sec_budget = min(sector_budgets.get(sector, investable * 0.1), remaining)
 
-        sizing = risk_based_sizing(price, stop_loss, portfolio_value,
+        is_us = not ticker.endswith(".JK")
+        unit_size = 1 if is_us else 100
+        ccy = "$" if is_us else "Rp "
+        sizing_portfolio = (portfolio_value / usd_idr_rate) if is_us else portfolio_value
+        sizing = risk_based_sizing(price, stop_loss, sizing_portfolio,
                                    risk_pct, regime, trade_type,
-                                   max_position_pct=0.05)
+                                   max_position_pct=0.05,
+                                   is_fractional=is_us,
+                                   currency_symbol=ccy,
+                                   lot_size=unit_size)
         if sizing["lots"] == 0:
             continue
 
         # Check actual cost fits in remaining budget
-        actual_cost = sizing["lots"] * price * 100
-        if actual_cost > remaining:
+        actual_cost = sizing["lots"] * price * unit_size
+        actual_cost_idr = actual_cost * usd_idr_rate if is_us else actual_cost
+        if actual_cost_idr > remaining:
             # Try to fit fewer lots
-            affordable_lots = int(remaining // (price * 100))
+            affordable_lots = (remaining / (price * unit_size * usd_idr_rate)) if is_us else int(remaining // (price * unit_size))
             if affordable_lots <= 0:
                 continue
-            actual_cost = affordable_lots * price * 100
-            actual_risk = affordable_lots * (price - stop_loss) * 100
+            actual_cost = affordable_lots * price * unit_size
+            actual_risk = affordable_lots * (price - stop_loss) * unit_size
+            actual_cost_idr = actual_cost * usd_idr_rate if is_us else actual_cost
             sizing = {
                 "lots":       affordable_lots,
-                "amount_idr": f"Rp {actual_cost:,.0f}",
-                "risk_idr":   f"Rp {actual_risk:,.0f}",
+                "amount_idr": f"{ccy}{actual_cost:,.2f}",
+                "risk_idr":   f"{ccy}{actual_risk:,.2f}",
                 "risk_pct":   f"{actual_risk/portfolio_value*100:.2f}% of portfolio",
                 "label":      "⚠️ Reduced — near portfolio cap",
-                "pct_raw":    actual_cost / portfolio_value,
+                "pct_raw":    actual_cost_idr / portfolio_value,
                 "was_capped": True,
             }
+
+        if is_us and (us_deployed + actual_cost_idr > us_cap_value):
+            continue
 
         playbook = r.get("playbook", {})
         conf_score, conf_label = compute_trade_confidence(
@@ -1281,10 +1322,10 @@ def build_execution_plan(results, macro_score, regime, allocation,
             "ticker":ticker,"sector":sector,"trade_type":trade_type,
             "composite":r["composite"],"why":why,"breakdown":r.get("breakdown",{}),
             "action":playbook.get("action",""),"strategy":playbook.get("strategy",""),
-            "entry":f"Rp {trade['entry_limit']:,.0f}",
+            "entry":f"{ccy}{trade['entry_limit']:,.2f}",
             "entry_type":trade.get("entry_type","LIMIT ORDER"),
-            "stop_loss":f"Rp {trade['stop_loss']:,.0f} ({trade['stop_pct']})",
-            "take_profit":f"Rp {trade['take_profit']:,.0f} ({trade['tp_pct']})",
+            "stop_loss":f"{ccy}{trade['stop_loss']:,.2f} ({trade['stop_pct']})",
+            "take_profit":f"{ccy}{trade['take_profit']:,.2f} ({trade['tp_pct']})",
             "hold_days":trade["hold_days"],
             "order_expiry":trade.get("order_expiry",""),
             "lots":sizing["lots"],"amount":sizing["amount_idr"],
@@ -1295,8 +1336,10 @@ def build_execution_plan(results, macro_score, regime, allocation,
             "sharia":r.get("sharia",True),"high_beta":r.get("high_beta",False),
         }
         plan[trade_type].append(entry_obj)
-        type_used[trade_type] = type_used.get(trade_type, 0) + actual_cost
-        total_deployed += actual_cost
+        type_used[trade_type] = type_used.get(trade_type, 0) + actual_cost_idr
+        total_deployed += actual_cost_idr
+        if is_us:
+            us_deployed += actual_cost_idr
 
     # High-beta — only if budget remaining
     per_hb = high_beta_budget / max(len(high_beta_plays), 1)
@@ -1308,43 +1351,59 @@ def build_execution_plan(results, macro_score, regime, allocation,
             continue
         remaining = MAX_TOTAL_DEPLOY - total_deployed
         budget    = min(per_hb, remaining)
+        is_us = not hb["ticker"].endswith(".JK")
+        unit_size = 1 if is_us else 100
+        ccy = "$" if is_us else "Rp "
+        sizing_portfolio = (portfolio_value / usd_idr_rate) if is_us else portfolio_value
         sizing    = risk_based_sizing(trade["price"], trade["stop_loss"],
-                                      portfolio_value, risk_pct, regime, "SCALP",
-                                      max_position_pct=0.05)
+                                      sizing_portfolio, risk_pct, regime, "SCALP",
+                                      max_position_pct=0.05,
+                                      is_fractional=is_us,
+                                      currency_symbol=ccy,
+                                      lot_size=unit_size)
         if sizing["lots"] == 0:
             continue
-        actual_cost = sizing["lots"] * trade["price"] * 100
-        if actual_cost > remaining:
-            affordable = int(remaining // (trade["price"] * 100))
+        actual_cost = sizing["lots"] * trade["price"] * unit_size
+        actual_cost_idr = actual_cost * usd_idr_rate if is_us else actual_cost
+        if actual_cost_idr > remaining:
+            affordable = (remaining / (trade["price"] * unit_size * usd_idr_rate)) if is_us else int(remaining // (trade["price"] * unit_size))
             if affordable <= 0:
                 continue
-            actual_cost = affordable * trade["price"] * 100
+            actual_cost = affordable * trade["price"] * unit_size
+            actual_cost_idr = actual_cost * usd_idr_rate if is_us else actual_cost
             sizing["lots"] = affordable
-            sizing["amount_idr"] = f"Rp {actual_cost:,.0f}"
-            sizing["pct_raw"]    = actual_cost / portfolio_value
+            sizing["amount_idr"] = f"{ccy}{actual_cost:,.2f}"
+            sizing["pct_raw"]    = actual_cost_idr / portfolio_value
+
+        if is_us and (us_deployed + actual_cost_idr > us_cap_value):
+            continue
 
         plan["HIGH_BETA"].append({
             "ticker":hb["ticker"],"sector":ticker_to_sector.get(hb["ticker"],"Unknown"),
             "trade_type":"SCALP","composite":hb["beta_score"],
             "why":f"Vol {hb['vol_ratio']}x | ADR {hb['adr']} | 5d {hb['5d_mom']}",
             "action":"BUY BREAKOUT","strategy":"Momentum chase — tight SL",
-            "entry":f"Rp {trade['entry_limit']:,.0f}",
+            "entry":f"{ccy}{trade['entry_limit']:,.2f}",
             "entry_type":"BUY STOP",
-            "stop_loss":f"Rp {trade['stop_loss']:,.0f} ({trade['stop_pct']})",
-            "take_profit":f"Rp {trade['take_profit']:,.0f} ({trade['tp_pct']})",
+            "stop_loss":f"{ccy}{trade['stop_loss']:,.2f} ({trade['stop_pct']})",
+            "take_profit":f"{ccy}{trade['take_profit']:,.2f} ({trade['tp_pct']})",
             "hold_days":1,"order_expiry":trade.get("order_expiry",""),
             "lots":sizing["lots"],"amount":sizing["amount_idr"],
             "risk":sizing.get("risk_idr","—"),"risk_pct_str":sizing.get("risk_pct","—"),
             "pct_raw":sizing["pct_raw"],
             "sharia":hb.get("sharia",True),"high_beta":True,
         })
-        total_deployed += actual_cost
+        total_deployed += actual_cost_idr
+        if is_us:
+            us_deployed += actual_cost_idr
 
     plan["_summary"] = {
         "total_deployed": round(total_deployed, 0),
         "pct_deployed":   round(total_deployed / portfolio_value * 100, 1),
         "cash_reserve":   round(budget_map["cash_reserve"], 0),
         "trade_count":    sum(len(v) for k, v in plan.items() if not k.startswith("_")),
+        "us_deployed": round(us_deployed, 2),
+        "us_pct": round((us_deployed / portfolio_value) * 100, 2) if portfolio_value else 0.0,
         "type_allocation":{k: round(v/investable*100,1) for k,v in type_used.items() if investable>0},
     }
     return plan
