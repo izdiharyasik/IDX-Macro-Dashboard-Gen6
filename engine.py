@@ -159,6 +159,24 @@ LQ45_UNIVERSE = [
     "MBMA.JK","EMTK.JK","ESSA.JK",
 ]
 
+
+US_UNIVERSE = [
+    # Mega-cap leaders (deep liquidity, strong trend persistence)
+    "AAPL","MSFT","NVDA","AMZN","GOOGL","META","AVGO","TSLA","BRK-B","LLY",
+    # Financials
+    "JPM","BAC","WFC","GS","MS","BLK","SCHW","C",
+    # Semis / AI infra
+    "AMD","QCOM","MU","TXN","INTC","AMAT","LRCX","KLAC","ANET","SMCI",
+    # Software / internet platforms
+    "NFLX","CRM","ORCL","ADBE","NOW","UBER","SHOP","PLTR","PANW","CRWD",
+    # Health care / biotech
+    "JNJ","UNH","ABBV","MRK","PFE","TMO","ISRG","VRTX",
+    # Consumer + defensives
+    "WMT","COST","HD","MCD","NKE","SBUX","KO","PEP","PG","PM",
+    # Industrials / energy / cyclicals
+    "XOM","CVX","SLB","CAT","GE","RTX","BA","DE","ETN","HON",
+]
+
 # Gorengan / Scalping Universe — high beta, small-mid cap, volatile
 # ⚠️ HIGH RISK — suitable for scalp/momentum plays only
 GORENGAN_UNIVERSE = [
@@ -175,17 +193,22 @@ GORENGAN_UNIVERSE = [
 def resolve_universe(universe_name: str = "IDX") -> list:
     """
     Returns list of tickers based on selected universe.
-    Options: 'LQ45', 'IDX', 'Gorengan', 'All'
+    Options: 'LQ45', 'IDX', 'US', 'Gorengan', 'All', 'Global Mix'
     """
     name = str(universe_name).upper().strip()
     if name == "LQ45":
         return LQ45_UNIVERSE
     elif name in ("IDX", "IDX80"):
         return IDX_UNIVERSE
+    elif name == "US":
+        return US_UNIVERSE
     elif name == "GORENGAN":
         return GORENGAN_UNIVERSE
     elif name == "ALL":
         combined = list(set(IDX_UNIVERSE + GORENGAN_UNIVERSE))
+        return sorted(combined)
+    elif name in ("GLOBAL MIX", "GLOBAL", "MIX"):
+        combined = list(set(IDX_UNIVERSE + US_UNIVERSE))
         return sorted(combined)
     else:
         return IDX_UNIVERSE  # safe fallback
