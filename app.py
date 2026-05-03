@@ -341,6 +341,7 @@ if len(fed_values) >= 3:
 macro_score, stance, scores, details = load_macro()
 macro_alignment_score, macro_conf_level, macro_breakdown = get_macro_alignment(scores)
 commodity_context                    = load_commodities()
+usd_idr_rate = float((commodity_context.get("USD/IDR", {}) or {}).get("value", 16000) or 16000)
 regime, regime_conf, regime_reason   = detect_regime(scores, details, commodity_context)
 allocation                           = get_allocation(regime, macro_score)
 rec_sector, rec_reason, signals      = recommend_sector(macro_score, scores, commodity_context)
@@ -757,7 +758,7 @@ if st.button(f"⚡ Run Deep Analysis on {len(final_candidates)} stocks"):
         plan=build_execution_plan(results,macro_score,regime,allocation,
                                    portfolio_value,rr_ratio,raw_data,
                                    hb_plays,threshold,all_scores,risk_pct_input,
-                                   flow_data,macro_alignment_score,us_max_pct)
+                                   flow_data,macro_alignment_score,us_max_pct,usd_idr_rate)
         created_signals = register_signals_from_plan(plan)
         if created_signals:
             st.success(f"📡 Signal tracker updated: {created_signals} new signal(s) persisted.")

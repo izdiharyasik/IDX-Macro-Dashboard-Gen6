@@ -1121,7 +1121,7 @@ def risk_based_sizing(entry_price, stop_loss_price, portfolio_value,
         "risk_idr":   f"{currency_symbol}{actual_risk:,.2f}",
         "risk_pct":   f"{actual_risk/portfolio_value*100:.2f}% of portfolio",
         "label":      f"{'⚠️ Size-capped at {:.0f}%'.format(max_position_pct*100) if capped else 'Risk-sized'}",
-        "pct_raw":    actual_cost / portfolio_value,
+        "pct_raw":    actual_cost_idr / portfolio_value,
         "was_capped": capped,
     }
 
@@ -1223,7 +1223,7 @@ def build_execution_plan(results, macro_score, regime, allocation,
                          portfolio_value, rr_ratio, raw_data,
                          high_beta_plays, threshold=0.25,
                          screen_rows=None, risk_pct=0.01, sector_flow=None,
-                         macro_alignment=None, us_max_pct=0.35):
+                         macro_alignment=None, us_max_pct=0.35, usd_idr_rate=16000.0):
 
     budget_map       = allocate_trades_by_sector(allocation, portfolio_value)
     sector_budgets   = budget_map["sector_budgets"]
@@ -1235,6 +1235,7 @@ def build_execution_plan(results, macro_score, regime, allocation,
     total_deployed   = 0.0
     us_deployed      = 0.0
     us_cap_value     = float(portfolio_value) * float(us_max_pct)
+    usd_idr_rate     = max(float(usd_idr_rate or 16000.0), 1.0)
 
     # Trade type caps (% of investable)
     type_caps = {k: investable * v for k, v in TRADE_ALLOCATION_CAPS.items()}
@@ -1273,7 +1274,8 @@ def build_execution_plan(results, macro_score, regime, allocation,
         is_us = not ticker.endswith(".JK")
         unit_size = 1 if is_us else 100
         ccy = "$" if is_us else "Rp "
-        sizing = risk_based_sizing(price, stop_loss, portfolio_value,
+        sizing_portfolio = (portfolio_value / usd_idr_rate) if is_us else portfolio_value
+        sizing = risk_based_sizing(price, stop_loss, sizing_portfolio,
                                    risk_pct, regime, trade_type,
                                    max_position_pct=0.05,
                                    is_fractional=is_us,
@@ -1284,24 +1286,26 @@ def build_execution_plan(results, macro_score, regime, allocation,
 
         # Check actual cost fits in remaining budget
         actual_cost = sizing["lots"] * price * unit_size
-        if actual_cost > remaining:
+        actual_cost_idr = actual_cost * usd_idr_rate if is_us else actual_cost
+        if actual_cost_idr > remaining:
             # Try to fit fewer lots
-            affordable_lots = (remaining / (price * unit_size)) if is_us else int(remaining // (price * unit_size))
+            affordable_lots = (remaining / (price * unit_size * usd_idr_rate)) if is_us else int(remaining // (price * unit_size))
             if affordable_lots <= 0:
                 continue
             actual_cost = affordable_lots * price * unit_size
             actual_risk = affordable_lots * (price - stop_loss) * unit_size
+            actual_cost_idr = actual_cost * usd_idr_rate if is_us else actual_cost
             sizing = {
                 "lots":       affordable_lots,
                 "amount_idr": f"{ccy}{actual_cost:,.2f}",
                 "risk_idr":   f"{ccy}{actual_risk:,.2f}",
                 "risk_pct":   f"{actual_risk/portfolio_value*100:.2f}% of portfolio",
                 "label":      "⚠️ Reduced — near portfolio cap",
-                "pct_raw":    actual_cost / portfolio_value,
+                "pct_raw":    actual_cost_idr / portfolio_value,
                 "was_capped": True,
             }
 
-        if is_us and (us_deployed + actual_cost > us_cap_value):
+        if is_us and (us_deployed + actual_cost_idr > us_cap_value):
             continue
 
         playbook = r.get("playbook", {})
@@ -1332,10 +1336,10 @@ def build_execution_plan(results, macro_score, regime, allocation,
             "sharia":r.get("sharia",True),"high_beta":r.get("high_beta",False),
         }
         plan[trade_type].append(entry_obj)
-        type_used[trade_type] = type_used.get(trade_type, 0) + actual_cost
-        total_deployed += actual_cost
+        type_used[trade_type] = type_used.get(trade_type, 0) + actual_cost_idr
+        total_deployed += actual_cost_idr
         if is_us:
-            us_deployed += actual_cost
+            us_deployed += actual_cost_idr
 
     # High-beta — only if budget remaining
     per_hb = high_beta_budget / max(len(high_beta_plays), 1)
@@ -1350,8 +1354,9 @@ def build_execution_plan(results, macro_score, regime, allocation,
         is_us = not hb["ticker"].endswith(".JK")
         unit_size = 1 if is_us else 100
         ccy = "$" if is_us else "Rp "
+        sizing_portfolio = (portfolio_value / usd_idr_rate) if is_us else portfolio_value
         sizing    = risk_based_sizing(trade["price"], trade["stop_loss"],
-                                      portfolio_value, risk_pct, regime, "SCALP",
+                                      sizing_portfolio, risk_pct, regime, "SCALP",
                                       max_position_pct=0.05,
                                       is_fractional=is_us,
                                       currency_symbol=ccy,
@@ -1359,14 +1364,19 @@ def build_execution_plan(results, macro_score, regime, allocation,
         if sizing["lots"] == 0:
             continue
         actual_cost = sizing["lots"] * trade["price"] * unit_size
-        if actual_cost > remaining:
-            affordable = (remaining / (trade["price"] * unit_size)) if is_us else int(remaining // (trade["price"] * unit_size))
+        actual_cost_idr = actual_cost * usd_idr_rate if is_us else actual_cost
+        if actual_cost_idr > remaining:
+            affordable = (remaining / (trade["price"] * unit_size * usd_idr_rate)) if is_us else int(remaining // (trade["price"] * unit_size))
             if affordable <= 0:
                 continue
             actual_cost = affordable * trade["price"] * unit_size
+            actual_cost_idr = actual_cost * usd_idr_rate if is_us else actual_cost
             sizing["lots"] = affordable
             sizing["amount_idr"] = f"{ccy}{actual_cost:,.2f}"
-            sizing["pct_raw"]    = actual_cost / portfolio_value
+            sizing["pct_raw"]    = actual_cost_idr / portfolio_value
+
+        if is_us and (us_deployed + actual_cost_idr > us_cap_value):
+            continue
 
         if is_us and (us_deployed + actual_cost > us_cap_value):
             continue
@@ -1386,9 +1396,9 @@ def build_execution_plan(results, macro_score, regime, allocation,
             "pct_raw":sizing["pct_raw"],
             "sharia":hb.get("sharia",True),"high_beta":True,
         })
-        total_deployed += actual_cost
+        total_deployed += actual_cost_idr
         if is_us:
-            us_deployed += actual_cost
+            us_deployed += actual_cost_idr
 
     plan["_summary"] = {
         "total_deployed": round(total_deployed, 0),
