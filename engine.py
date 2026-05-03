@@ -1075,7 +1075,7 @@ def get_high_beta_plays(raw_data_dict, top_n=3):
 # ═══════════════════════════════════════════════════════════
 def risk_based_sizing(entry_price, stop_loss_price, portfolio_value,
                       risk_pct=0.01, regime="NEUTRAL", trade_type="SWING",
-                      max_position_pct=0.05):
+                      max_position_pct=0.05, is_fractional=False, currency_symbol="Rp ", lot_size=100):
     """
     1% risk rule with TWO hard caps:
     1. Max single position = max_position_pct of portfolio (default 5%)
@@ -1090,32 +1090,35 @@ def risk_based_sizing(entry_price, stop_loss_price, portfolio_value,
 
     risk_budget    = portfolio_value * risk_pct * regime_mult * type_mult
     risk_per_share = entry_price - stop_loss_price
-    risk_per_lot   = risk_per_share * 100
+    unit_size = 1.0 if is_fractional else float(lot_size)
+    risk_per_lot   = risk_per_share * unit_size
 
     if risk_per_lot <= 0:
         return {"lots":0,"amount_idr":"—","risk_idr":"—","risk_pct":"—","pct_raw":0.0,"label":"Zero risk/lot"}
 
     # Cap 1: from risk rule
-    lots_risk = int(risk_budget // risk_per_lot)
+    lots_risk = (risk_budget / risk_per_lot) if is_fractional else int(risk_budget // risk_per_lot)
 
     # Cap 2: hard position size cap — never more than max_position_pct of portfolio
     max_value  = portfolio_value * max_position_pct
-    lots_cap   = int(max_value // (entry_price * 100))
+    lots_cap   = (max_value / (entry_price * unit_size)) if is_fractional else int(max_value // (entry_price * unit_size))
 
     lots = min(lots_risk, lots_cap)
+    if is_fractional:
+        lots = round(float(lots), 4)
     if lots <= 0:
-        return {"lots":0,"amount_idr":"—","risk_idr":f"Rp {risk_budget:,.0f}",
+        return {"lots":0,"amount_idr":"—","risk_idr":f"{currency_symbol}{risk_budget:,.2f}",
                 "risk_pct":"—","pct_raw":0.0,
-                "label":f"Min 1 lot = Rp {entry_price*100:,.0f}"}
+                "label":f"Min 1 unit = {currency_symbol}{entry_price*unit_size:,.2f}"}
 
-    actual_cost = lots * entry_price * 100
+    actual_cost = lots * entry_price * unit_size
     actual_risk = lots * risk_per_lot
     capped      = lots < lots_risk  # was the cap triggered?
 
     return {
         "lots":       lots,
-        "amount_idr": f"Rp {actual_cost:,.0f}",
-        "risk_idr":   f"Rp {actual_risk:,.0f}",
+        "amount_idr": f"{currency_symbol}{actual_cost:,.2f}",
+        "risk_idr":   f"{currency_symbol}{actual_risk:,.2f}",
         "risk_pct":   f"{actual_risk/portfolio_value*100:.2f}% of portfolio",
         "label":      f"{'⚠️ Size-capped at {:.0f}%'.format(max_position_pct*100) if capped else 'Risk-sized'}",
         "pct_raw":    actual_cost / portfolio_value,
@@ -1265,25 +1268,31 @@ def build_execution_plan(results, macro_score, regime, allocation,
         remaining = MAX_TOTAL_DEPLOY - total_deployed
         sec_budget = min(sector_budgets.get(sector, investable * 0.1), remaining)
 
+        is_us = not ticker.endswith(".JK")
+        unit_size = 1 if is_us else 100
+        ccy = "$" if is_us else "Rp "
         sizing = risk_based_sizing(price, stop_loss, portfolio_value,
                                    risk_pct, regime, trade_type,
-                                   max_position_pct=0.05)
+                                   max_position_pct=0.05,
+                                   is_fractional=is_us,
+                                   currency_symbol=ccy,
+                                   lot_size=unit_size)
         if sizing["lots"] == 0:
             continue
 
         # Check actual cost fits in remaining budget
-        actual_cost = sizing["lots"] * price * 100
+        actual_cost = sizing["lots"] * price * unit_size
         if actual_cost > remaining:
             # Try to fit fewer lots
-            affordable_lots = int(remaining // (price * 100))
+            affordable_lots = (remaining / (price * unit_size)) if is_us else int(remaining // (price * unit_size))
             if affordable_lots <= 0:
                 continue
-            actual_cost = affordable_lots * price * 100
-            actual_risk = affordable_lots * (price - stop_loss) * 100
+            actual_cost = affordable_lots * price * unit_size
+            actual_risk = affordable_lots * (price - stop_loss) * unit_size
             sizing = {
                 "lots":       affordable_lots,
-                "amount_idr": f"Rp {actual_cost:,.0f}",
-                "risk_idr":   f"Rp {actual_risk:,.0f}",
+                "amount_idr": f"{ccy}{actual_cost:,.2f}",
+                "risk_idr":   f"{ccy}{actual_risk:,.2f}",
                 "risk_pct":   f"{actual_risk/portfolio_value*100:.2f}% of portfolio",
                 "label":      "⚠️ Reduced — near portfolio cap",
                 "pct_raw":    actual_cost / portfolio_value,
@@ -1304,10 +1313,10 @@ def build_execution_plan(results, macro_score, regime, allocation,
             "ticker":ticker,"sector":sector,"trade_type":trade_type,
             "composite":r["composite"],"why":why,"breakdown":r.get("breakdown",{}),
             "action":playbook.get("action",""),"strategy":playbook.get("strategy",""),
-            "entry":f"Rp {trade['entry_limit']:,.0f}",
+            "entry":f"{ccy}{trade['entry_limit']:,.2f}",
             "entry_type":trade.get("entry_type","LIMIT ORDER"),
-            "stop_loss":f"Rp {trade['stop_loss']:,.0f} ({trade['stop_pct']})",
-            "take_profit":f"Rp {trade['take_profit']:,.0f} ({trade['tp_pct']})",
+            "stop_loss":f"{ccy}{trade['stop_loss']:,.2f} ({trade['stop_pct']})",
+            "take_profit":f"{ccy}{trade['take_profit']:,.2f} ({trade['tp_pct']})",
             "hold_days":trade["hold_days"],
             "order_expiry":trade.get("order_expiry",""),
             "lots":sizing["lots"],"amount":sizing["amount_idr"],
@@ -1331,19 +1340,25 @@ def build_execution_plan(results, macro_score, regime, allocation,
             continue
         remaining = MAX_TOTAL_DEPLOY - total_deployed
         budget    = min(per_hb, remaining)
+        is_us = not hb["ticker"].endswith(".JK")
+        unit_size = 1 if is_us else 100
+        ccy = "$" if is_us else "Rp "
         sizing    = risk_based_sizing(trade["price"], trade["stop_loss"],
                                       portfolio_value, risk_pct, regime, "SCALP",
-                                      max_position_pct=0.05)
+                                      max_position_pct=0.05,
+                                      is_fractional=is_us,
+                                      currency_symbol=ccy,
+                                      lot_size=unit_size)
         if sizing["lots"] == 0:
             continue
-        actual_cost = sizing["lots"] * trade["price"] * 100
+        actual_cost = sizing["lots"] * trade["price"] * unit_size
         if actual_cost > remaining:
-            affordable = int(remaining // (trade["price"] * 100))
+            affordable = (remaining / (trade["price"] * unit_size)) if is_us else int(remaining // (trade["price"] * unit_size))
             if affordable <= 0:
                 continue
-            actual_cost = affordable * trade["price"] * 100
+            actual_cost = affordable * trade["price"] * unit_size
             sizing["lots"] = affordable
-            sizing["amount_idr"] = f"Rp {actual_cost:,.0f}"
+            sizing["amount_idr"] = f"{ccy}{actual_cost:,.2f}"
             sizing["pct_raw"]    = actual_cost / portfolio_value
 
         plan["HIGH_BETA"].append({
@@ -1351,10 +1366,10 @@ def build_execution_plan(results, macro_score, regime, allocation,
             "trade_type":"SCALP","composite":hb["beta_score"],
             "why":f"Vol {hb['vol_ratio']}x | ADR {hb['adr']} | 5d {hb['5d_mom']}",
             "action":"BUY BREAKOUT","strategy":"Momentum chase — tight SL",
-            "entry":f"Rp {trade['entry_limit']:,.0f}",
+            "entry":f"{ccy}{trade['entry_limit']:,.2f}",
             "entry_type":"BUY STOP",
-            "stop_loss":f"Rp {trade['stop_loss']:,.0f} ({trade['stop_pct']})",
-            "take_profit":f"Rp {trade['take_profit']:,.0f} ({trade['tp_pct']})",
+            "stop_loss":f"{ccy}{trade['stop_loss']:,.2f} ({trade['stop_pct']})",
+            "take_profit":f"{ccy}{trade['take_profit']:,.2f} ({trade['tp_pct']})",
             "hold_days":1,"order_expiry":trade.get("order_expiry",""),
             "lots":sizing["lots"],"amount":sizing["amount_idr"],
             "risk":sizing.get("risk_idr","—"),"risk_pct_str":sizing.get("risk_pct","—"),
