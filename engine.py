@@ -1378,6 +1378,9 @@ def build_execution_plan(results, macro_score, regime, allocation,
         if is_us and (us_deployed + actual_cost_idr > us_cap_value):
             continue
 
+        if is_us and (us_deployed + actual_cost > us_cap_value):
+            continue
+
         plan["HIGH_BETA"].append({
             "ticker":hb["ticker"],"sector":ticker_to_sector.get(hb["ticker"],"Unknown"),
             "trade_type":"SCALP","composite":hb["beta_score"],
