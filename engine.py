@@ -1121,7 +1121,7 @@ def risk_based_sizing(entry_price, stop_loss_price, portfolio_value,
         "risk_idr":   f"{currency_symbol}{actual_risk:,.2f}",
         "risk_pct":   f"{actual_risk/portfolio_value*100:.2f}% of portfolio",
         "label":      f"{'⚠️ Size-capped at {:.0f}%'.format(max_position_pct*100) if capped else 'Risk-sized'}",
-        "pct_raw":    actual_cost_idr / portfolio_value,
+        "pct_raw":    actual_cost / portfolio_value,
         "was_capped": capped,
     }
 
