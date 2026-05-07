@@ -1081,6 +1081,8 @@ def risk_based_sizing(entry_price, stop_loss_price, portfolio_value,
     1. Max single position = max_position_pct of portfolio (default 5%)
     2. Minimum risk per share check to prevent absurd lot counts
     """
+    if portfolio_value <= 0:
+        return {"lots":0,"amount_idr":"—","risk_idr":"—","risk_pct":"—","pct_raw":0.0,"label":"Invalid portfolio"}
     if entry_price <= 0 or stop_loss_price <= 0 or entry_price <= stop_loss_price:
         return {"lots":0,"amount_idr":"—","risk_idr":"—","risk_pct":"—","pct_raw":0.0,"label":"Invalid SL"}
 
@@ -1114,6 +1116,10 @@ def risk_based_sizing(entry_price, stop_loss_price, portfolio_value,
     actual_cost = lots * entry_price * unit_size
     actual_risk = lots * risk_per_lot
     capped      = lots < lots_risk  # was the cap triggered?
+    # pct_raw is intentionally computed in the same currency as portfolio_value.
+    # build_execution_plan passes a USD-denominated portfolio for US tickers and
+    # an IDR-denominated portfolio for IDX tickers, so no local actual_cost_idr
+    # conversion exists inside this helper.
 
     return {
         "lots":       lots,
@@ -1121,7 +1127,7 @@ def risk_based_sizing(entry_price, stop_loss_price, portfolio_value,
         "risk_idr":   f"{currency_symbol}{actual_risk:,.2f}",
         "risk_pct":   f"{actual_risk/portfolio_value*100:.2f}% of portfolio",
         "label":      f"{'⚠️ Size-capped at {:.0f}%'.format(max_position_pct*100) if capped else 'Risk-sized'}",
-        "pct_raw":    actual_cost_idr / portfolio_value,
+        "pct_raw":    actual_cost / portfolio_value,
         "was_capped": capped,
     }
 
