@@ -1081,6 +1081,8 @@ def risk_based_sizing(entry_price, stop_loss_price, portfolio_value,
     1. Max single position = max_position_pct of portfolio (default 5%)
     2. Minimum risk per share check to prevent absurd lot counts
     """
+    if portfolio_value <= 0:
+        return {"lots":0,"amount_idr":"—","risk_idr":"—","risk_pct":"—","pct_raw":0.0,"label":"Invalid portfolio"}
     if entry_price <= 0 or stop_loss_price <= 0 or entry_price <= stop_loss_price:
         return {"lots":0,"amount_idr":"—","risk_idr":"—","risk_pct":"—","pct_raw":0.0,"label":"Invalid SL"}
 
@@ -1114,6 +1116,12 @@ def risk_based_sizing(entry_price, stop_loss_price, portfolio_value,
     actual_cost = lots * entry_price * unit_size
     actual_risk = lots * risk_per_lot
     capped      = lots < lots_risk  # was the cap triggered?
+    # Keep this same-currency alias local to the sizing helper. The caller passes
+    # a USD-denominated portfolio for US tickers and an IDR-denominated portfolio
+    # for IDX tickers, then handles any cross-currency deployment conversion.
+    # Defining the historical name here prevents regressions if pct_raw is later
+    # refactored near the return statement.
+    actual_cost_idr = actual_cost
 
     return {
         "lots":       lots,
