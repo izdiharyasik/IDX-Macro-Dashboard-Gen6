@@ -1116,10 +1116,12 @@ def risk_based_sizing(entry_price, stop_loss_price, portfolio_value,
     actual_cost = lots * entry_price * unit_size
     actual_risk = lots * risk_per_lot
     capped      = lots < lots_risk  # was the cap triggered?
-    # pct_raw is intentionally computed in the same currency as portfolio_value.
-    # build_execution_plan passes a USD-denominated portfolio for US tickers and
-    # an IDR-denominated portfolio for IDX tickers, so no local actual_cost_idr
-    # conversion exists inside this helper.
+    # Keep this same-currency alias local to the sizing helper. The caller passes
+    # a USD-denominated portfolio for US tickers and an IDR-denominated portfolio
+    # for IDX tickers, then handles any cross-currency deployment conversion.
+    # Defining the historical name here prevents regressions if pct_raw is later
+    # refactored near the return statement.
+    actual_cost_idr = actual_cost
 
     return {
         "lots":       lots,
