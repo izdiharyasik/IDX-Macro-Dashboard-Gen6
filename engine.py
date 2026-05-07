@@ -1116,12 +1116,6 @@ def risk_based_sizing(entry_price, stop_loss_price, portfolio_value,
     actual_cost = lots * entry_price * unit_size
     actual_risk = lots * risk_per_lot
     capped      = lots < lots_risk  # was the cap triggered?
-    # Keep this same-currency alias local to the sizing helper. The caller passes
-    # a USD-denominated portfolio for US tickers and an IDR-denominated portfolio
-    # for IDX tickers, then handles any cross-currency deployment conversion.
-    # Defining the historical name here prevents regressions if pct_raw is later
-    # refactored near the return statement.
-    actual_cost_idr = actual_cost
 
     return {
         "lots":       lots,
@@ -1129,6 +1123,10 @@ def risk_based_sizing(entry_price, stop_loss_price, portfolio_value,
         "risk_idr":   f"{currency_symbol}{actual_risk:,.2f}",
         "risk_pct":   f"{actual_risk/portfolio_value*100:.2f}% of portfolio",
         "label":      f"{'⚠️ Size-capped at {:.0f}%'.format(max_position_pct*100) if capped else 'Risk-sized'}",
+        # The helper works in the same currency as the portfolio passed in:
+        # US calls pass a USD portfolio, while IDX calls pass an IDR portfolio.
+        # Keep pct_raw tied directly to actual_cost so no legacy *_idr alias can
+        # raise a NameError inside this currency-agnostic helper.
         "pct_raw":    actual_cost / portfolio_value,
         "was_capped": capped,
     }
