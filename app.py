@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import engine as eng
-from utils.fred_client import fetch_fred, parse_latest_value, parse_change_arrow
+from utils.fred_client import fetch_macro_observations, parse_latest_value, parse_change_arrow
 from utils.supabase_client import (
     get_supabase_client,
     safe_select,
@@ -231,9 +231,7 @@ def load_yf_data(symbol, period="6mo", interval="1d"):
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_fred_bundle(api_key):
-    if not api_key:
-        return {}
+def load_fred_bundle(api_key=None):
     series_map = {
         "hy_spread": "BAMLH0A0HYM2",
         "fed_funds": "FEDFUNDS",
@@ -243,7 +241,7 @@ def load_fred_bundle(api_key):
     out = {}
     for key, series in series_map.items():
         try:
-            out[key] = fetch_fred(series, api_key, limit=24 if key == "cpi" else 5)
+            out[key] = fetch_macro_observations(series, api_key, limit=24 if key == "cpi" else 5)
         except Exception:
             out[key] = []
     return out
@@ -334,7 +332,9 @@ fred_bundle = load_fred_bundle(fred_api_key)
 
 fred_unavailable = not bool(fred_bundle) or all(not v for v in fred_bundle.values())
 if fred_unavailable:
-    st.warning("FRED API unavailable — using manual inputs.")
+    st.warning("Live macro data unavailable — using manual inputs.")
+elif not fred_api_key:
+    st.caption("FRED_API_KEY not configured; using public FRED CSV fallback for macro data.")
 
 hy_spread_live = parse_latest_value(fred_bundle.get("hy_spread", [])) if not fred_unavailable else None
 fed_funds_live = parse_latest_value(fred_bundle.get("fed_funds", [])) if not fred_unavailable else None
