@@ -27,6 +27,7 @@ Open the URL printed by Streamlit (normally `http://localhost:8501`).
 Add these keys in `.streamlit/secrets.toml` (local) or Streamlit Cloud Secrets:
 
 ```toml
+# Optional: app falls back to public FRED CSV when omitted.
 FRED_API_KEY = "your_fred_key"
 SUPABASE_URL = "https://xxxx.supabase.co"
 SUPABASE_KEY = "your_supabase_anon_or_service_key"
@@ -37,7 +38,7 @@ telegram_chat_id = "123456789"
 Supported aliases in app:
 - Telegram: `telegram_bot_token` / `TG_BOT_TOKEN`, `telegram_chat_id` / `TG_CHAT_ID`
 - Supabase: `SUPABASE_URL`/`supabase_url`, `SUPABASE_KEY`/`supabase_key`
-- FRED: `FRED_API_KEY` / `fred_api_key`
+- FRED (optional): `FRED_API_KEY` / `fred_api_key`; without it, the app uses FRED's public CSV feed.
 
 Nested sections are also supported:
 
@@ -75,4 +76,4 @@ The app expects these tables:
 
 - IDX lot convention is enforced in sizing logic (1 lot = 100 shares, round down).
 - ARB risk is flagged when price < 200 IDR or average volume < 5M shares/day.
-- If FRED API is unavailable, use manual overrides from the sidebar fallback expander.
+- `FRED_API_KEY` is optional. The app first uses the keyed FRED API when configured, then falls back to FRED's public CSV feed, and finally to manual overrides if live macro data is unavailable.
