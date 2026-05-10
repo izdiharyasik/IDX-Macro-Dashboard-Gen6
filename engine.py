@@ -290,6 +290,107 @@ TRADE_TYPES = {
 
 DEFAULT_WEIGHTS = {"macro":0.30,"technical":0.30,"sentiment":0.20,"fundamental":0.20}
 
+
+ASSET_CLASS_UNIVERSES = {
+    "Crypto": {
+        "BTC-USD": "Bitcoin",
+        "ETH-USD": "Ethereum",
+        "SOL-USD": "Solana",
+        "BNB-USD": "BNB",
+        "XRP-USD": "XRP",
+        "ADA-USD": "Cardano",
+        "AVAX-USD": "Avalanche",
+        "LINK-USD": "Chainlink",
+    },
+    "EM Equities": {
+        "EEM": "iShares MSCI Emerging Markets ETF",
+        "VWO": "Vanguard FTSE Emerging Markets ETF",
+        "IEMG": "iShares Core MSCI Emerging Markets ETF",
+        "EIDO": "iShares MSCI Indonesia ETF",
+        "INDA": "iShares MSCI India ETF",
+        "EWZ": "iShares MSCI Brazil ETF",
+        "FXI": "iShares China Large-Cap ETF",
+        "EWW": "iShares MSCI Mexico ETF",
+        "EWY": "iShares MSCI South Korea ETF",
+        "EWT": "iShares MSCI Taiwan ETF",
+    },
+    "Commodities": {
+        "DBC": "Invesco DB Commodity Index Tracking Fund",
+        "PDBC": "Invesco Optimum Yield Diversified Commodity Strategy ETF",
+        "GSG": "iShares S&P GSCI Commodity-Indexed Trust",
+        "USO": "United States Oil Fund",
+        "UNG": "United States Natural Gas Fund",
+        "CPER": "United States Copper Index Fund",
+        "DBA": "Invesco DB Agriculture Fund",
+        "WEAT": "Teucrium Wheat Fund",
+    },
+    "High Yield Bonds": {
+        "HYG": "iShares iBoxx High Yield Corporate Bond ETF",
+        "JNK": "SPDR Bloomberg High Yield Bond ETF",
+        "HYLB": "Xtrackers USD High Yield Corporate Bond ETF",
+        "ANGL": "VanEck Fallen Angel High Yield Bond ETF",
+        "SHYG": "iShares 0-5 Year High Yield Corporate Bond ETF",
+        "SJNK": "SPDR Bloomberg Short Term High Yield Bond ETF",
+    },
+    "Developed Equities": {
+        "SPY": "SPDR S&P 500 ETF Trust",
+        "QQQ": "Invesco QQQ Trust",
+        "DIA": "SPDR Dow Jones Industrial Average ETF Trust",
+        "IWM": "iShares Russell 2000 ETF",
+        "EFA": "iShares MSCI EAFE ETF",
+        "VEA": "Vanguard FTSE Developed Markets ETF",
+        "EWJ": "iShares MSCI Japan ETF",
+        "EWU": "iShares MSCI United Kingdom ETF",
+        "EWG": "iShares MSCI Germany ETF",
+        "EWA": "iShares MSCI Australia ETF",
+    },
+    "Gold": {
+        "GLD": "SPDR Gold Shares",
+        "IAU": "iShares Gold Trust",
+        "SGOL": "abrdn Physical Gold Shares ETF",
+        "GDX": "VanEck Gold Miners ETF",
+        "GDXJ": "VanEck Junior Gold Miners ETF",
+    },
+    "IG Bonds": {
+        "LQD": "iShares iBoxx Investment Grade Corporate Bond ETF",
+        "VCIT": "Vanguard Intermediate-Term Corporate Bond ETF",
+        "IGSB": "iShares 1-5 Year Investment Grade Corporate Bond ETF",
+        "AGG": "iShares Core U.S. Aggregate Bond ETF",
+        "BND": "Vanguard Total Bond Market ETF",
+        "TIP": "iShares TIPS Bond ETF",
+    },
+    "USD Cash": {
+        "BIL": "SPDR Bloomberg 1-3 Month T-Bill ETF",
+        "SGOV": "iShares 0-3 Month Treasury Bond ETF",
+        "SHV": "iShares Short Treasury Bond ETF",
+        "USFR": "WisdomTree Floating Rate Treasury Fund",
+        "TFLO": "iShares Treasury Floating Rate Bond ETF",
+    },
+}
+
+ASSET_CLASS_BENCHMARKS = {
+    "Crypto": "BTC-USD",
+    "EM Equities": "VWO",
+    "Commodities": "DBC",
+    "High Yield Bonds": "HYG",
+    "Developed Equities": "SPY",
+    "Gold": "GLD",
+    "IG Bonds": "LQD",
+    "USD Cash": "BIL",
+}
+
+ASSET_CLASS_DEFAULT_CONVICTIONS = {
+    "Crypto": 1.0,
+    "EM Equities": 1.0,
+    "Commodities": 0.5,
+    "High Yield Bonds": 0.5,
+    "Developed Equities": 0.5,
+    "Gold": 0.0,
+    "IG Bonds": -0.5,
+    "USD Cash": -0.5,
+}
+
+
 # ═══════════════════════════════════════════════════════════
 # MACRO SIGNAL ENGINE
 # ═══════════════════════════════════════════════════════════
@@ -341,6 +442,149 @@ def _weighted_signal(close, up_is_good=True):
            "20d":f"{'▲' if ret_20d>0 else '▼'} {abs(ret_20d*100):.2f}%",
            "strength":score}
     return score,trend,f"{float(close.iloc[-1]):.2f}",f"{'▲' if ret_1d>0 else '▼'} {abs(ret_1d*100):.2f}%"
+
+
+
+def _class_regime_bias(asset_class, macro_score, regime):
+    """Translate the broad macro regime into a small asset-class tilt."""
+    macro_component = float(np.clip(macro_score / 4, -1, 1))
+    regime_components = {
+        "Crypto": {
+            "RISK_ON": 0.35, "NEUTRAL": 0.05, "INFLATION": 0.05,
+            "TIGHTENING": -0.15, "RISK_OFF": -0.40, "CRISIS": -0.60,
+        },
+        "EM Equities": {
+            "RISK_ON": 0.25, "NEUTRAL": 0.05, "INFLATION": 0.10,
+            "TIGHTENING": -0.10, "RISK_OFF": -0.35, "CRISIS": -0.55,
+        },
+        "Commodities": {
+            "RISK_ON": 0.10, "NEUTRAL": 0.00, "INFLATION": 0.35,
+            "TIGHTENING": 0.15, "RISK_OFF": -0.10, "CRISIS": -0.05,
+        },
+        "High Yield Bonds": {
+            "RISK_ON": 0.25, "NEUTRAL": 0.05, "INFLATION": -0.10,
+            "TIGHTENING": -0.25, "RISK_OFF": -0.45, "CRISIS": -0.60,
+        },
+        "Developed Equities": {
+            "RISK_ON": 0.25, "NEUTRAL": 0.05, "INFLATION": -0.05,
+            "TIGHTENING": -0.15, "RISK_OFF": -0.35, "CRISIS": -0.55,
+        },
+        "Gold": {
+            "RISK_ON": -0.05, "NEUTRAL": 0.05, "INFLATION": 0.20,
+            "TIGHTENING": 0.00, "RISK_OFF": 0.25, "CRISIS": 0.35,
+        },
+        "IG Bonds": {
+            "RISK_ON": -0.05, "NEUTRAL": 0.05, "INFLATION": -0.20,
+            "TIGHTENING": -0.10, "RISK_OFF": 0.25, "CRISIS": 0.35,
+        },
+        "USD Cash": {
+            "RISK_ON": -0.25, "NEUTRAL": 0.00, "INFLATION": 0.05,
+            "TIGHTENING": 0.20, "RISK_OFF": 0.35, "CRISIS": 0.50,
+        },
+    }
+    macro_weights = {
+        "Crypto": 0.65,
+        "EM Equities": 0.55,
+        "Commodities": 0.30,
+        "High Yield Bonds": 0.55,
+        "Developed Equities": 0.55,
+        "Gold": -0.20,
+        "IG Bonds": -0.25,
+        "USD Cash": -0.35,
+    }
+    regime_component = regime_components.get(asset_class, {}).get(regime, 0.0)
+    macro_weight = macro_weights.get(asset_class, 0.50)
+    return float(np.clip((macro_component * macro_weight) + regime_component, -1, 1))
+
+def _recommendation_label(score):
+    if score >= 0.55:
+        return "STRONG BUY"
+    if score >= 0.25:
+        return "BUY"
+    if score >= 0.05:
+        return "WATCH"
+    if score <= -0.25:
+        return "AVOID"
+    return "HOLD"
+
+def recommend_asset_class_tickers(asset_class, macro_score=0.0, regime="NEUTRAL",
+                                  class_conviction=None, top_n=5, period="6mo"):
+    """
+    Rank specific tickers inside a broad asset class such as Crypto or EM Equities.
+
+    class_conviction is an optional external score from a cross-asset matrix on a
+    -2 to +2 scale. It lets another app say "Crypto is +2" while this function
+    answers "which crypto ticker is strongest right now?".
+    """
+    universe = ASSET_CLASS_UNIVERSES.get(asset_class, {})
+    if not universe:
+        return []
+
+    benchmark_ticker = ASSET_CLASS_BENCHMARKS.get(asset_class)
+    benchmark_close = _download_close(benchmark_ticker, period=period) if benchmark_ticker else pd.Series(dtype=float)
+    benchmark_ret_20d = 0.0
+    if len(benchmark_close) >= 22:
+        benchmark_ret_20d = float((benchmark_close.iloc[-1] - benchmark_close.iloc[-21]) / benchmark_close.iloc[-21])
+
+    conviction_component = 0.0 if class_conviction is None else float(np.clip(class_conviction / 2, -1, 1))
+    macro_bias = _class_regime_bias(asset_class, macro_score, regime)
+    rows = []
+
+    for ticker, name in universe.items():
+        close = _download_close(ticker, period=period)
+        if len(close) < 22:
+            continue
+
+        momentum_score, trend, price, change = _weighted_signal(close, up_is_good=True)
+        ret_20d = float((close.iloc[-1] - close.iloc[-21]) / close.iloc[-21])
+        relative_score = float(np.clip((ret_20d - benchmark_ret_20d) / 0.15, -1, 1))
+        score = float(np.clip(
+            momentum_score * 0.50 +
+            relative_score * 0.20 +
+            macro_bias * 0.15 +
+            conviction_component * 0.15,
+            -1, 1
+        ))
+        if regime in ("CRISIS", "RISK_OFF") and score < 0.45:
+            action = "AVOID"
+        else:
+            action = _recommendation_label(score)
+
+        rows.append({
+            "asset_class": asset_class,
+            "ticker": ticker,
+            "name": name,
+            "score": round(score, 3),
+            "action": action,
+            "price": price,
+            "change": change,
+            "trend_5d": trend.get("5d", "N/A"),
+            "trend_20d": trend.get("20d", "N/A"),
+            "relative_20d": round(relative_score, 3),
+            "macro_bias": round(macro_bias, 3),
+            "conviction_bias": round(conviction_component, 3),
+            "why": (
+                f"Momentum {momentum_score:+.2f}; relative 20D {relative_score:+.2f}; "
+                f"macro/regime bias {macro_bias:+.2f}; class conviction {conviction_component:+.2f}"
+            ),
+        })
+
+    return sorted(rows, key=lambda r: r["score"], reverse=True)[:top_n]
+
+def recommend_cross_asset_tickers(class_convictions=None, macro_score=0.0, regime="NEUTRAL", top_n=5, period="6mo"):
+    """Return ticker recommendations for every supported cross-asset bucket."""
+    class_convictions = class_convictions or {}
+    output = {}
+    for asset_class in ASSET_CLASS_UNIVERSES:
+        output[asset_class] = recommend_asset_class_tickers(
+            asset_class=asset_class,
+            macro_score=macro_score,
+            regime=regime,
+            class_conviction=class_convictions.get(asset_class),
+            top_n=top_n,
+            period=period,
+        )
+    return output
 
 def get_macro_score():
     scores,details={},{}
