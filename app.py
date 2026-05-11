@@ -366,13 +366,16 @@ def load_money_flow():  return get_money_flow()
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_cross_asset_recommendations(class_convictions, macro_score_value, regime_value, top_n_value, rr_ratio_value):
-    return recommend_cross_asset_tickers(
-        class_convictions=dict(class_convictions),
-        macro_score=macro_score_value,
-        regime=regime_value,
-        top_n=top_n_value,
-        rr_ratio=rr_ratio_value,
-    )
+    kwargs = {
+        "class_convictions": dict(class_convictions),
+        "macro_score": macro_score_value,
+        "regime": regime_value,
+        "top_n": top_n_value,
+        "rr_ratio": rr_ratio_value,
+    }
+    sig = inspect.signature(recommend_cross_asset_tickers)
+    filtered = {key: value for key, value in kwargs.items() if key in sig.parameters}
+    return recommend_cross_asset_tickers(**filtered)
 
 supabase_client = get_supabase_client(st.secrets)
 supabase_configured = supabase_client is not None
