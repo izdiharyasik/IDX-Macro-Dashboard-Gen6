@@ -29,8 +29,9 @@ from engine import (
     build_morning_message, generate_brief_image,
     scan_market_for_fvg,
     send_telegram, send_telegram_photo,
-    resolve_universe,
+    resolve_universe, recommend_cross_asset_tickers,
     SECTORS, IDX_UNIVERSE, TRADE_TYPES, REGIME_COLORS,
+    ASSET_CLASS_UNIVERSES, ASSET_CLASS_DEFAULT_CONVICTIONS,
     REGIME_ALLOCATIONS, SHARIA_COMPLIANT, DEFAULT_WEIGHTS,
 )
 from trade_journal import (
