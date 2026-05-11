@@ -28,7 +28,6 @@ from engine import (
     trade_checklist, risk_based_sizing, get_trade_setup,
     build_morning_message, generate_brief_image,
     scan_market_for_fvg,
-    get_macro_alignment, compute_trade_confidence, explain_rejection,
     send_telegram, send_telegram_photo,
     resolve_universe, recommend_cross_asset_tickers,
     SECTORS, IDX_UNIVERSE, TRADE_TYPES, REGIME_COLORS,
@@ -204,6 +203,35 @@ get_macro_alignment = getattr(eng, "get_macro_alignment", _fallback_macro_alignm
 compute_trade_confidence = getattr(eng, "compute_trade_confidence", _fallback_trade_confidence)
 explain_rejection = getattr(eng, "explain_rejection", _fallback_explain_rejection)
 get_timing_model_signal = getattr(eng, "get_timing_model_signal", _fallback_timing_model_signal)
+DEFAULT_ASSET_CLASS_UNIVERSES = {
+    "Crypto": {},
+    "EM Equities": {},
+    "Commodities": {},
+    "High Yield Bonds": {},
+    "Developed Equities": {},
+    "Gold": {},
+    "IG Bonds": {},
+    "USD Cash": {},
+}
+
+ASSET_CLASS_UNIVERSES = getattr(eng, "ASSET_CLASS_UNIVERSES", DEFAULT_ASSET_CLASS_UNIVERSES)
+ASSET_CLASS_DEFAULT_CONVICTIONS = getattr(
+    eng,
+    "ASSET_CLASS_DEFAULT_CONVICTIONS",
+    {asset_class: 0.0 for asset_class in ASSET_CLASS_UNIVERSES},
+)
+
+def _fallback_cross_asset_recommendations(class_convictions=None, macro_score=0.0,
+                                          regime="NEUTRAL", top_n=5, period="6mo",
+                                          rr_ratio=2.0):
+    _ = class_convictions, macro_score, regime, top_n, period, rr_ratio
+    return {asset_class: [] for asset_class in ASSET_CLASS_UNIVERSES}
+
+recommend_cross_asset_tickers = getattr(
+    eng,
+    "recommend_cross_asset_tickers",
+    _fallback_cross_asset_recommendations,
+)
     
 st.set_page_config(page_title="IDX Trading Dashboard — Gen 5", layout="wide")
 st.markdown("""
