@@ -27,3 +27,11 @@ def test_cross_asset_loader_filters_optional_kwargs_by_signature():
     assert "if key in sig.parameters" in source
     assert "recommend_cross_asset_tickers(**filtered)" in source
 
+
+def test_cross_asset_display_rows_are_normalized_before_column_selection():
+    source = Path("app.py").read_text()
+
+    assert "CROSS_ASSET_DISPLAY_COLUMNS" in source
+    assert "def _prepare_cross_asset_display_df" in source
+    assert "if col not in df.columns" in source
+    assert "display_rows = _prepare_cross_asset_display_df(rows)" in source

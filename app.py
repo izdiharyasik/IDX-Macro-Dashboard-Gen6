@@ -109,6 +109,19 @@ def _safe_df(rows):
             df[col] = df[col].astype(str)
     return df
 
+CROSS_ASSET_DISPLAY_COLUMNS = [
+    "ticker", "name", "action", "score", "price", "entry", "take_profit", "stop_loss",
+    "risk_pct", "reward_pct", "setup", "change", "trend_5d", "trend_20d", "relative_20d", "why",
+]
+
+def _prepare_cross_asset_display_df(rows):
+    """Normalize cross-asset rows from old/new engine versions before dataframe display."""
+    df = pd.DataFrame(rows)
+    for col in CROSS_ASSET_DISPLAY_COLUMNS:
+        if col not in df.columns:
+            df[col] = np.nan
+    return df[CROSS_ASSET_DISPLAY_COLUMNS]
+
 def _fallback_macro_alignment(_scores):
     total = round(float(sum(_scores.values())), 3) if isinstance(_scores, dict) else 0.0
     if abs(total) >= 1.0:
@@ -729,16 +742,18 @@ for asset_tab, asset_class in zip(asset_tabs, asset_class_names):
             continue
         leader = rows[0]
         metric_cols = st.columns(3)
-        metric_cols[0].metric("Top pick", leader["ticker"], leader["action"])
-        metric_cols[1].metric("Ticker score", f"{leader['score']:+.2f}", leader["change"])
+        metric_cols[0].metric("Top pick", leader.get("ticker", "—"), leader.get("action", "—"))
+        try:
+            score_text = f"{float(leader.get('score', 0)):+.2f}"
+        except Exception:
+            score_text = "—"
+        metric_cols[1].metric("Ticker score", score_text, leader.get("change", "—"))
         level_text = " / ".join(str(leader.get(key) or "—") for key in ("entry", "take_profit", "stop_loss"))
         metric_cols[2].metric("Entry / TP / SL", level_text)
-        display_rows = pd.DataFrame(rows)
+        display_rows = _prepare_cross_asset_display_df(rows)
+        gradient_cols = [col for col in ["score", "relative_20d"] if col in display_rows.columns]
         st.dataframe(
-            display_rows[[
-                "ticker", "name", "action", "score", "price", "entry", "take_profit", "stop_loss",
-                "risk_pct", "reward_pct", "setup", "change", "trend_5d", "trend_20d", "relative_20d", "why"
-            ]].style.background_gradient(subset=["score", "relative_20d"], cmap="RdYlGn"),
+            display_rows.style.background_gradient(subset=gradient_cols, cmap="RdYlGn"),
             width="stretch",
         )
         st.caption(
