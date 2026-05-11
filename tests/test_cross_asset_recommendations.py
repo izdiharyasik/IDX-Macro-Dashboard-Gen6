@@ -35,6 +35,29 @@ class CrossAssetRecommendationTests(unittest.TestCase):
         self.assertIn(rows[0]["action"], {"BUY", "STRONG BUY"})
         self.assertLessEqual(len(rows), 3)
 
+
+    @patch("engine._download_close")
+    def test_recommendations_include_entry_take_profit_and_stop_loss(self, mock_download_close):
+        mock_download_close.return_value = close_series(start=100, step=1)
+
+        rows = recommend_asset_class_tickers(
+            "Developed Equities",
+            macro_score=2.0,
+            regime="RISK_ON",
+            class_conviction=2.0,
+            top_n=1,
+            rr_ratio=2.0,
+        )
+
+        top = rows[0]
+        self.assertIsNotNone(top["entry"])
+        self.assertIsNotNone(top["take_profit"])
+        self.assertIsNotNone(top["stop_loss"])
+        self.assertLess(top["stop_loss"], top["entry"])
+        self.assertGreater(top["take_profit"], top["entry"])
+        self.assertGreater(top["risk_pct"], 0)
+        self.assertGreater(top["reward_pct"], top["risk_pct"])
+
     @patch("engine._download_close", return_value=close_series())
     def test_cross_asset_recommendations_returns_every_supported_bucket(self, _mock_download_close):
         output = recommend_cross_asset_tickers(

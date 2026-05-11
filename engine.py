@@ -507,8 +507,73 @@ def _recommendation_label(score):
         return "AVOID"
     return "HOLD"
 
+
+
+def _round_trade_level(value):
+    if value is None or not np.isfinite(value):
+        return None
+    value = float(value)
+    if value >= 1000:
+        return round(value, 0)
+    if value >= 10:
+        return round(value, 2)
+    if value >= 1:
+        return round(value, 3)
+    return round(value, 5)
+
+def _cross_asset_trade_levels(close, action, rr_ratio=2.0):
+    """Build indicative entry, stop, and target levels from close-only market data."""
+    if close is None or len(close) < 22:
+        return {
+            "entry": None,
+            "stop_loss": None,
+            "take_profit": None,
+            "risk_pct": None,
+            "reward_pct": None,
+            "setup": "No setup — insufficient data",
+        }
+
+    price = float(close.iloc[-1])
+    returns = close.pct_change().dropna()
+    vol_price = float(returns.tail(20).std() * price) if len(returns) >= 20 else price * 0.02
+    move_price = float(close.diff().abs().tail(14).mean()) if len(close) >= 15 else price * 0.02
+    atr_proxy = max(vol_price, move_price, price * 0.01)
+
+    if action in ("AVOID", "HOLD"):
+        return {
+            "entry": None,
+            "stop_loss": None,
+            "take_profit": None,
+            "risk_pct": None,
+            "reward_pct": None,
+            "setup": "No fresh long setup",
+        }
+
+    recent_support = float(close.tail(20).min())
+    if action == "WATCH":
+        entry = price + 0.25 * atr_proxy
+        setup = "Breakout trigger"
+    else:
+        entry = price - 0.35 * atr_proxy
+        setup = "Buy pullback"
+
+    stop_loss = min(entry - 1.5 * atr_proxy, recent_support - 0.25 * atr_proxy)
+    if stop_loss <= 0:
+        stop_loss = max(entry * 0.90, price * 0.75)
+    risk = max(entry - stop_loss, price * 0.005)
+    take_profit = entry + risk * rr_ratio
+
+    return {
+        "entry": _round_trade_level(entry),
+        "stop_loss": _round_trade_level(stop_loss),
+        "take_profit": _round_trade_level(take_profit),
+        "risk_pct": round(float(risk / entry * 100), 2) if entry else None,
+        "reward_pct": round(float((take_profit - entry) / entry * 100), 2) if entry else None,
+        "setup": setup,
+    }
+
 def recommend_asset_class_tickers(asset_class, macro_score=0.0, regime="NEUTRAL",
-                                  class_conviction=None, top_n=5, period="6mo"):
+                                  class_conviction=None, top_n=5, period="6mo", rr_ratio=2.0):
     """
     Rank specific tickers inside a broad asset class such as Crypto or EM Equities.
 
@@ -549,6 +614,7 @@ def recommend_asset_class_tickers(asset_class, macro_score=0.0, regime="NEUTRAL"
             action = "AVOID"
         else:
             action = _recommendation_label(score)
+        trade_levels = _cross_asset_trade_levels(close, action, rr_ratio=rr_ratio)
 
         rows.append({
             "asset_class": asset_class,
@@ -558,6 +624,12 @@ def recommend_asset_class_tickers(asset_class, macro_score=0.0, regime="NEUTRAL"
             "action": action,
             "price": price,
             "change": change,
+            "entry": trade_levels["entry"],
+            "stop_loss": trade_levels["stop_loss"],
+            "take_profit": trade_levels["take_profit"],
+            "risk_pct": trade_levels["risk_pct"],
+            "reward_pct": trade_levels["reward_pct"],
+            "setup": trade_levels["setup"],
             "trend_5d": trend.get("5d", "N/A"),
             "trend_20d": trend.get("20d", "N/A"),
             "relative_20d": round(relative_score, 3),
@@ -571,7 +643,7 @@ def recommend_asset_class_tickers(asset_class, macro_score=0.0, regime="NEUTRAL"
 
     return sorted(rows, key=lambda r: r["score"], reverse=True)[:top_n]
 
-def recommend_cross_asset_tickers(class_convictions=None, macro_score=0.0, regime="NEUTRAL", top_n=5, period="6mo"):
+def recommend_cross_asset_tickers(class_convictions=None, macro_score=0.0, regime="NEUTRAL", top_n=5, period="6mo", rr_ratio=2.0):
     """Return ticker recommendations for every supported cross-asset bucket."""
     class_convictions = class_convictions or {}
     output = {}
@@ -583,6 +655,7 @@ def recommend_cross_asset_tickers(class_convictions=None, macro_score=0.0, regim
             class_conviction=class_convictions.get(asset_class),
             top_n=top_n,
             period=period,
+            rr_ratio=rr_ratio,
         )
     return output
 

@@ -337,12 +337,13 @@ def load_commodities(): return get_commodity_context()
 def load_money_flow():  return get_money_flow()
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def load_cross_asset_recommendations(class_convictions, macro_score_value, regime_value, top_n_value):
+def load_cross_asset_recommendations(class_convictions, macro_score_value, regime_value, top_n_value, rr_ratio_value):
     return recommend_cross_asset_tickers(
         class_convictions=dict(class_convictions),
         macro_score=macro_score_value,
         regime=regime_value,
         top_n=top_n_value,
+        rr_ratio=rr_ratio_value,
     )
 
 supabase_client = get_supabase_client(st.secrets)
@@ -681,6 +682,7 @@ try:
         float(macro_score),
         regime,
         int(cross_asset_top_n),
+        float(rr_ratio),
     )
 except Exception as exc:
     cross_asset_recs = {}
@@ -698,18 +700,20 @@ for asset_tab, asset_class in zip(asset_tabs, asset_class_names):
         metric_cols = st.columns(3)
         metric_cols[0].metric("Top pick", leader["ticker"], leader["action"])
         metric_cols[1].metric("Ticker score", f"{leader['score']:+.2f}", leader["change"])
-        metric_cols[2].metric("Macro bias", f"{leader['macro_bias']:+.2f}", f"Conviction {leader['conviction_bias']:+.2f}")
+        level_text = " / ".join(str(leader.get(key) or "—") for key in ("entry", "take_profit", "stop_loss"))
+        metric_cols[2].metric("Entry / TP / SL", level_text)
         display_rows = pd.DataFrame(rows)
         st.dataframe(
             display_rows[[
-                "ticker", "name", "action", "score", "price", "change",
-                "trend_5d", "trend_20d", "relative_20d", "why"
+                "ticker", "name", "action", "score", "price", "entry", "take_profit", "stop_loss",
+                "risk_pct", "reward_pct", "setup", "change", "trend_5d", "trend_20d", "relative_20d", "why"
             ]].style.background_gradient(subset=["score", "relative_20d"], cmap="RdYlGn"),
             width="stretch",
         )
         st.caption(
             "Decision rule: scores combine ticker momentum, 20-day relative strength versus the asset-class benchmark, "
-            "current macro/regime bias, and the asset-class conviction slider. Bond and cash buckets are ETF proxies, "
+            "current macro/regime bias, and the asset-class conviction slider. Entry/TP/SL levels are indicative technical levels "
+            "based on recent volatility, not guaranteed fills. Bond and cash buckets are ETF proxies, "
             "not individual bond recommendations."
         )
 
