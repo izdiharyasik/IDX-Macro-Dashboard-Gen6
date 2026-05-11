@@ -77,3 +77,7 @@ The app expects these tables:
 - IDX lot convention is enforced in sizing logic (1 lot = 100 shares, round down).
 - ARB risk is flagged when price < 200 IDR or average volume < 5M shares/day.
 - `FRED_API_KEY` is optional. The app first uses the keyed FRED API when configured, then falls back to FRED's public CSV feed, and finally to manual overrides if live macro data is unavailable.
+
+## Streamlit file watcher in containers
+
+This repo includes `.streamlit/config.toml` with `server.fileWatcherType = "none"` so Streamlit does not allocate Linux inotify watches in hosted/container deployments. This prevents noisy startup errors such as `OSError: [Errno 28] inotify watch limit reached` while keeping the app runnable. If you want local hot-reload during development, override it with `STREAMLIT_SERVER_FILE_WATCHER_TYPE=poll streamlit run app.py`.

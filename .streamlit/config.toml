@@ -1,0 +1,5 @@
+[server]
+# Disable Streamlit's file watcher in hosted/container environments.
+# This prevents watchdog/inotify exhaustion errors such as:
+# OSError: [Errno 28] inotify watch limit reached
+fileWatcherType = "none"
