@@ -33,5 +33,7 @@ def test_cross_asset_display_rows_are_normalized_before_column_selection():
 
     assert "CROSS_ASSET_DISPLAY_COLUMNS" in source
     assert "def _prepare_cross_asset_display_df" in source
+    assert "def _fill_missing_cross_asset_levels" in source
     assert "if col not in df.columns" in source
-    assert "display_rows = _prepare_cross_asset_display_df(rows)" in source
+    assert "display_rows = _prepare_cross_asset_display_df(rows, rr_ratio)" in source
+    assert "leader = display_rows.iloc[0].to_dict()" in source

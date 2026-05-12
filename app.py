@@ -114,9 +114,78 @@ CROSS_ASSET_DISPLAY_COLUMNS = [
     "risk_pct", "reward_pct", "setup", "change", "trend_5d", "trend_20d", "relative_20d", "why",
 ]
 
-def _prepare_cross_asset_display_df(rows):
+CROSS_ASSET_FALLBACK_RISK_PCT = {
+    "Crypto": 8.0,
+    "EM Equities": 4.0,
+    "Commodities": 4.0,
+    "High Yield Bonds": 2.0,
+    "Developed Equities": 3.0,
+    "Gold": 3.0,
+    "IG Bonds": 1.5,
+    "USD Cash": 0.5,
+}
+
+def _coerce_float(value):
+    try:
+        if value in (None, "", "None", "nan", "N/A"):
+            return None
+        cleaned = str(value).replace("$", "").replace("Rp", "").replace(",", "").strip()
+        out = float(cleaned)
+        return out if np.isfinite(out) else None
+    except Exception:
+        return None
+
+def _missing_level(value):
+    return _coerce_float(value) is None
+
+def _format_cross_asset_level(value):
+    if value is None or not np.isfinite(value):
+        return np.nan
+    if value >= 1000:
+        return round(float(value), 0)
+    if value >= 10:
+        return round(float(value), 2)
+    if value >= 1:
+        return round(float(value), 3)
+    return round(float(value), 5)
+
+def _fill_missing_cross_asset_levels(row, rr_ratio_value):
+    """Add indicative Entry/TP/SL when older engine rows do not provide them."""
+    out = dict(row)
+    action = str(out.get("action", "")).upper()
+    if action in ("AVOID", "HOLD") or not any(_missing_level(out.get(k)) for k in ("entry", "take_profit", "stop_loss")):
+        return out
+
+    price = _coerce_float(out.get("price"))
+    if price is None or price <= 0:
+        return out
+
+    asset_class = str(out.get("asset_class", ""))
+    risk_pct = CROSS_ASSET_FALLBACK_RISK_PCT.get(asset_class, 3.0)
+    rr = max(float(rr_ratio_value or 2.0), 0.5)
+    entry = price * (1.0025 if action == "WATCH" else 0.995)
+    stop_loss = entry * (1 - risk_pct / 100)
+    take_profit = entry + (entry - stop_loss) * rr
+
+    out.setdefault("setup", "Fallback technical levels")
+    if _missing_level(out.get("entry")):
+        out["entry"] = _format_cross_asset_level(entry)
+    if _missing_level(out.get("stop_loss")):
+        out["stop_loss"] = _format_cross_asset_level(stop_loss)
+    if _missing_level(out.get("take_profit")):
+        out["take_profit"] = _format_cross_asset_level(take_profit)
+    if _missing_level(out.get("risk_pct")):
+        out["risk_pct"] = round(risk_pct, 2)
+    if _missing_level(out.get("reward_pct")):
+        out["reward_pct"] = round(risk_pct * rr, 2)
+    if not out.get("setup") or str(out.get("setup")).lower() == "none":
+        out["setup"] = "Fallback technical levels"
+    return out
+
+def _prepare_cross_asset_display_df(rows, rr_ratio_value=2.0):
     """Normalize cross-asset rows from old/new engine versions before dataframe display."""
-    df = pd.DataFrame(rows)
+    normalized_rows = [_fill_missing_cross_asset_levels(row, rr_ratio_value) for row in rows]
+    df = pd.DataFrame(normalized_rows)
     for col in CROSS_ASSET_DISPLAY_COLUMNS:
         if col not in df.columns:
             df[col] = np.nan
@@ -740,7 +809,8 @@ for asset_tab, asset_class in zip(asset_tabs, asset_class_names):
         if not rows:
             st.info(f"No {asset_class} ticker data available yet. Check yfinance connectivity or try again later.")
             continue
-        leader = rows[0]
+        display_rows = _prepare_cross_asset_display_df(rows, rr_ratio)
+        leader = display_rows.iloc[0].to_dict()
         metric_cols = st.columns(3)
         metric_cols[0].metric("Top pick", leader.get("ticker", "—"), leader.get("action", "—"))
         try:
@@ -750,7 +820,6 @@ for asset_tab, asset_class in zip(asset_tabs, asset_class_names):
         metric_cols[1].metric("Ticker score", score_text, leader.get("change", "—"))
         level_text = " / ".join(str(leader.get(key) or "—") for key in ("entry", "take_profit", "stop_loss"))
         metric_cols[2].metric("Entry / TP / SL", level_text)
-        display_rows = _prepare_cross_asset_display_df(rows)
         gradient_cols = [col for col in ["score", "relative_20d"] if col in display_rows.columns]
         st.dataframe(
             display_rows.style.background_gradient(subset=gradient_cols, cmap="RdYlGn"),
