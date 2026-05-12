@@ -28,7 +28,6 @@ from engine import (
     trade_checklist, risk_based_sizing, get_trade_setup,
     build_morning_message, generate_brief_image,
     scan_market_for_fvg,
-    get_macro_alignment, compute_trade_confidence, explain_rejection,
     send_telegram, send_telegram_photo,
     resolve_universe,
     SECTORS, IDX_UNIVERSE, TRADE_TYPES, REGIME_COLORS,
@@ -108,6 +107,88 @@ def _safe_df(rows):
         if df[col].dtype == object:
             df[col] = df[col].astype(str)
     return df
+
+CROSS_ASSET_DISPLAY_COLUMNS = [
+    "ticker", "name", "action", "score", "price", "entry", "take_profit", "stop_loss",
+    "risk_pct", "reward_pct", "setup", "change", "trend_5d", "trend_20d", "relative_20d", "why",
+]
+
+CROSS_ASSET_FALLBACK_RISK_PCT = {
+    "Crypto": 8.0,
+    "EM Equities": 4.0,
+    "Commodities": 4.0,
+    "High Yield Bonds": 2.0,
+    "Developed Equities": 3.0,
+    "Gold": 3.0,
+    "IG Bonds": 1.5,
+    "USD Cash": 0.5,
+}
+
+def _coerce_float(value):
+    try:
+        if value in (None, "", "None", "nan", "N/A"):
+            return None
+        cleaned = str(value).replace("$", "").replace("Rp", "").replace(",", "").strip()
+        out = float(cleaned)
+        return out if np.isfinite(out) else None
+    except Exception:
+        return None
+
+def _missing_level(value):
+    return _coerce_float(value) is None
+
+def _format_cross_asset_level(value):
+    if value is None or not np.isfinite(value):
+        return np.nan
+    if value >= 1000:
+        return round(float(value), 0)
+    if value >= 10:
+        return round(float(value), 2)
+    if value >= 1:
+        return round(float(value), 3)
+    return round(float(value), 5)
+
+def _fill_missing_cross_asset_levels(row, rr_ratio_value):
+    """Add indicative Entry/TP/SL when older engine rows do not provide them."""
+    out = dict(row)
+    action = str(out.get("action", "")).upper()
+    if action in ("AVOID", "HOLD") or not any(_missing_level(out.get(k)) for k in ("entry", "take_profit", "stop_loss")):
+        return out
+
+    price = _coerce_float(out.get("price"))
+    if price is None or price <= 0:
+        return out
+
+    asset_class = str(out.get("asset_class", ""))
+    risk_pct = CROSS_ASSET_FALLBACK_RISK_PCT.get(asset_class, 3.0)
+    rr = max(float(rr_ratio_value or 2.0), 0.5)
+    entry = price * (1.0025 if action == "WATCH" else 0.995)
+    stop_loss = entry * (1 - risk_pct / 100)
+    take_profit = entry + (entry - stop_loss) * rr
+
+    out.setdefault("setup", "Fallback technical levels")
+    if _missing_level(out.get("entry")):
+        out["entry"] = _format_cross_asset_level(entry)
+    if _missing_level(out.get("stop_loss")):
+        out["stop_loss"] = _format_cross_asset_level(stop_loss)
+    if _missing_level(out.get("take_profit")):
+        out["take_profit"] = _format_cross_asset_level(take_profit)
+    if _missing_level(out.get("risk_pct")):
+        out["risk_pct"] = round(risk_pct, 2)
+    if _missing_level(out.get("reward_pct")):
+        out["reward_pct"] = round(risk_pct * rr, 2)
+    if not out.get("setup") or str(out.get("setup")).lower() == "none":
+        out["setup"] = "Fallback technical levels"
+    return out
+
+def _prepare_cross_asset_display_df(rows, rr_ratio_value=2.0):
+    """Normalize cross-asset rows from old/new engine versions before dataframe display."""
+    normalized_rows = [_fill_missing_cross_asset_levels(row, rr_ratio_value) for row in rows]
+    df = pd.DataFrame(normalized_rows)
+    for col in CROSS_ASSET_DISPLAY_COLUMNS:
+        if col not in df.columns:
+            df[col] = np.nan
+    return df[CROSS_ASSET_DISPLAY_COLUMNS]
 
 def _fallback_macro_alignment(_scores):
     total = round(float(sum(_scores.values())), 3) if isinstance(_scores, dict) else 0.0
@@ -203,6 +284,35 @@ get_macro_alignment = getattr(eng, "get_macro_alignment", _fallback_macro_alignm
 compute_trade_confidence = getattr(eng, "compute_trade_confidence", _fallback_trade_confidence)
 explain_rejection = getattr(eng, "explain_rejection", _fallback_explain_rejection)
 get_timing_model_signal = getattr(eng, "get_timing_model_signal", _fallback_timing_model_signal)
+DEFAULT_ASSET_CLASS_UNIVERSES = {
+    "Crypto": {},
+    "EM Equities": {},
+    "Commodities": {},
+    "High Yield Bonds": {},
+    "Developed Equities": {},
+    "Gold": {},
+    "IG Bonds": {},
+    "USD Cash": {},
+}
+
+ASSET_CLASS_UNIVERSES = getattr(eng, "ASSET_CLASS_UNIVERSES", DEFAULT_ASSET_CLASS_UNIVERSES)
+ASSET_CLASS_DEFAULT_CONVICTIONS = getattr(
+    eng,
+    "ASSET_CLASS_DEFAULT_CONVICTIONS",
+    {asset_class: 0.0 for asset_class in ASSET_CLASS_UNIVERSES},
+)
+
+def _fallback_cross_asset_recommendations(class_convictions=None, macro_score=0.0,
+                                          regime="NEUTRAL", top_n=5, period="6mo",
+                                          rr_ratio=2.0):
+    _ = class_convictions, macro_score, regime, top_n, period, rr_ratio
+    return {asset_class: [] for asset_class in ASSET_CLASS_UNIVERSES}
+
+recommend_cross_asset_tickers = getattr(
+    eng,
+    "recommend_cross_asset_tickers",
+    _fallback_cross_asset_recommendations,
+)
     
 st.set_page_config(page_title="IDX Trading Dashboard — Gen 5", layout="wide")
 st.markdown("""
@@ -277,6 +387,21 @@ with st.sidebar.expander("Universe and filters", expanded=True):
     )
     use_auto = st.checkbox("Use auto threshold", value=True)
 
+with st.sidebar.expander("Cross-asset ticker picks", expanded=False):
+    st.caption("Mirror the other app's asset-class conviction matrix (-2 avoid to +2 strong buy).")
+    cross_asset_top_n = st.slider("Tickers per asset class", 3, 8, 5)
+    class_conviction_inputs = {}
+    for asset_class in ASSET_CLASS_UNIVERSES:
+        default_conviction = ASSET_CLASS_DEFAULT_CONVICTIONS.get(asset_class, 0.0)
+        class_conviction_inputs[asset_class] = st.slider(
+            f"{asset_class} conviction",
+            -2.0,
+            2.0,
+            float(default_conviction),
+            0.5,
+            key=f"conviction_{asset_class.lower().replace(' ', '_')}",
+        )
+
 with st.sidebar.expander("Model settings", expanded=False):
     st.caption("Manual override — use if FRED API unavailable")
     cpi_yoy_override = st.number_input("Manual US CPI YoY (%)", min_value=0.0, max_value=15.0, value=3.3, step=0.1)
@@ -319,6 +444,19 @@ def load_commodities(): return get_commodity_context()
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_money_flow():  return get_money_flow()
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_cross_asset_recommendations(class_convictions, macro_score_value, regime_value, top_n_value, rr_ratio_value):
+    kwargs = {
+        "class_convictions": dict(class_convictions),
+        "macro_score": macro_score_value,
+        "regime": regime_value,
+        "top_n": top_n_value,
+        "rr_ratio": rr_ratio_value,
+    }
+    sig = inspect.signature(recommend_cross_asset_tickers)
+    filtered = {key: value for key, value in kwargs.items() if key in sig.parameters}
+    return recommend_cross_asset_tickers(**filtered)
 
 supabase_client = get_supabase_client(st.secrets)
 supabase_configured = supabase_client is not None
@@ -641,6 +779,57 @@ with cr:
               ncol=2,fontsize=7,labelcolor="white",facecolor="#0f1117",edgecolor="none")
     ax.set_title(f"{regime} Allocation",color="white",fontsize=10)
     st.pyplot(fig)
+
+# Cross-asset ticker recommendations
+st.subheader("🧭 Specific Ticker Picks — Cross Asset")
+st.caption(
+    "Use this when a broad asset-class matrix says Crypto, EM, Commodities, High Yield Bonds, "
+    "Developed Equities, Gold, IG Bonds, or USD Cash is attractive. The dashboard ranks the "
+    "specific ticker proxies to consider instead of stopping at the asset-class label."
+)
+class_convictions = dict(class_conviction_inputs)
+try:
+    cross_asset_recs = load_cross_asset_recommendations(
+        tuple(sorted(class_convictions.items())),
+        float(macro_score),
+        regime,
+        int(cross_asset_top_n),
+        float(rr_ratio),
+    )
+except Exception as exc:
+    cross_asset_recs = {}
+    st.warning(f"Cross-asset ticker recommendations unavailable: {exc}")
+
+asset_class_names = list(ASSET_CLASS_UNIVERSES.keys())
+asset_tabs = st.tabs(asset_class_names)
+for asset_tab, asset_class in zip(asset_tabs, asset_class_names):
+    with asset_tab:
+        rows = cross_asset_recs.get(asset_class, [])
+        if not rows:
+            st.info(f"No {asset_class} ticker data available yet. Check yfinance connectivity or try again later.")
+            continue
+        display_rows = _prepare_cross_asset_display_df(rows, rr_ratio)
+        leader = display_rows.iloc[0].to_dict()
+        metric_cols = st.columns(3)
+        metric_cols[0].metric("Top pick", leader.get("ticker", "—"), leader.get("action", "—"))
+        try:
+            score_text = f"{float(leader.get('score', 0)):+.2f}"
+        except Exception:
+            score_text = "—"
+        metric_cols[1].metric("Ticker score", score_text, leader.get("change", "—"))
+        level_text = " / ".join(str(leader.get(key) or "—") for key in ("entry", "take_profit", "stop_loss"))
+        metric_cols[2].metric("Entry / TP / SL", level_text)
+        gradient_cols = [col for col in ["score", "relative_20d"] if col in display_rows.columns]
+        st.dataframe(
+            display_rows.style.background_gradient(subset=gradient_cols, cmap="RdYlGn"),
+            width="stretch",
+        )
+        st.caption(
+            "Decision rule: scores combine ticker momentum, 20-day relative strength versus the asset-class benchmark, "
+            "current macro/regime bias, and the asset-class conviction slider. Entry/TP/SL levels are indicative technical levels "
+            "based on recent volatility, not guaranteed fills. Bond and cash buckets are ETF proxies, "
+            "not individual bond recommendations."
+        )
 
 # Money flow table
 if flow_data:
