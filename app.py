@@ -29,9 +29,8 @@ from engine import (
     build_morning_message, generate_brief_image,
     scan_market_for_fvg,
     send_telegram, send_telegram_photo,
-    resolve_universe, recommend_cross_asset_tickers,
+    resolve_universe,
     SECTORS, IDX_UNIVERSE, TRADE_TYPES, REGIME_COLORS,
-    ASSET_CLASS_UNIVERSES, ASSET_CLASS_DEFAULT_CONVICTIONS,
     REGIME_ALLOCATIONS, SHARIA_COMPLIANT, DEFAULT_WEIGHTS,
 )
 from trade_journal import (
@@ -70,7 +69,6 @@ def _run_execution_plan_with_compat(results, macro_score, regime, allocation, po
 if not hasattr(st, "_orig_line_chart_fn"):
     st._orig_line_chart_fn = st.line_chart
 _orig_line_chart = st._orig_line_chart_fn
-_orig_line_chart = st.line_chart
 
 def _safe_line_chart(data=None, *args, **kwargs):
     try:
@@ -315,19 +313,110 @@ recommend_cross_asset_tickers = getattr(
     _fallback_cross_asset_recommendations,
 )
     
-st.set_page_config(page_title="IDX Trading Dashboard — Gen 5", layout="wide")
+st.set_page_config(
+    page_title="IDX Macro Trading Dashboard — Gen 7",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 st.markdown("""
 <style>
-.stApp { background-color: #0f1117; color: #e6e6e6; }
+:root {
+  --bg: #0b1020;
+  --panel: rgba(18, 25, 42, 0.92);
+  --panel-soft: rgba(28, 38, 60, 0.72);
+  --border: rgba(148, 163, 184, 0.22);
+  --text: #e5edf8;
+  --muted: #94a3b8;
+  --accent: #38bdf8;
+  --accent-2: #f59e0b;
+  --good: #22c55e;
+  --warn: #f59e0b;
+  --bad: #ef4444;
+}
+.stApp {
+  background:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.14), transparent 28rem),
+    linear-gradient(180deg, #0b1020 0%, #111827 100%);
+  color: var(--text);
+}
+.block-container { padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1420px; }
+[data-testid="stSidebar"] { background: rgba(8, 13, 28, 0.96); border-right: 1px solid var(--border); }
+[data-testid="stMetric"] {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  padding: 0.85rem 1rem;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.22);
+}
 [data-testid="stMetricValue"], [data-testid="stMetricDelta"], .stDataFrame, table {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
-.orange-accent { color: #FF9900; font-weight: 700; }
-.stTabs [role="tab"] { padding: 0.35rem 0.7rem; }
+.stTabs [role="tab"] {
+  padding: 0.55rem 0.95rem;
+  border-radius: 999px;
+  margin-right: 0.25rem;
+}
+.stTabs [aria-selected="true"] { background: rgba(56, 189, 248, 0.16); color: #e0f2fe; }
+div[data-testid="stExpander"] { border: 1px solid var(--border); border-radius: 1rem; overflow: hidden; }
+.hero-card, .status-card, .section-card, .step-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 1.25rem;
+  padding: 1.15rem 1.25rem;
+  box-shadow: 0 16px 42px rgba(0,0,0,0.26);
+}
+.hero-card { margin-bottom: 1rem; }
+.hero-kicker { color: var(--accent); font-size: 0.85rem; letter-spacing: .08em; text-transform: uppercase; font-weight: 700; }
+.hero-title { font-size: clamp(2rem, 4vw, 3.2rem); line-height: 1.05; margin: 0.2rem 0 0.5rem; font-weight: 800; }
+.hero-subtitle, .muted-copy { color: var(--muted); font-size: 0.98rem; }
+.status-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem; margin: .85rem 0 1rem; }
+.status-item { background: var(--panel-soft); border: 1px solid var(--border); border-radius: 1rem; padding: .8rem; }
+.status-label { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+.status-value { font-weight: 800; font-size: 1.08rem; margin-top: .15rem; }
+.pill { display: inline-block; padding: .2rem .55rem; border-radius: 999px; font-size: .78rem; font-weight: 700; border: 1px solid var(--border); }
+.pill-good { background: rgba(34,197,94,.14); color: #86efac; }
+.pill-warn { background: rgba(245,158,11,.14); color: #fcd34d; }
+.pill-bad { background: rgba(239,68,68,.14); color: #fca5a5; }
+.pill-info { background: rgba(56,189,248,.14); color: #bae6fd; }
+.section-title { margin: 1.35rem 0 .65rem; font-size: 1.45rem; font-weight: 800; }
+.section-title span { color: var(--accent); }
+.orange-accent { color: var(--accent-2); font-weight: 700; }
+@media (max-width: 900px) { .status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 </style>
 """, unsafe_allow_html=True)
-st.title("📊 IDX Macro Trading Dashboard — Gen 7")
-st.caption("Build: gen7-no-linechart-jkse-v3")
+
+def _section_header(number, title, helper=""):
+    helper_html = f"<div class='muted-copy'>{helper}</div>" if helper else ""
+    st.markdown(
+        f"<div class='section-title'><span>{number}.</span> {title}</div>{helper_html}",
+        unsafe_allow_html=True,
+    )
+
+def _status_class(label):
+    text = str(label).upper()
+    if any(token in text for token in ("RISK_ON", "BUY", "STRONG", "LOW", "DAILY GRIND")):
+        return "pill-good"
+    if any(token in text for token in ("CRISIS", "RISK_OFF", "AVOID", "HIGH")):
+        return "pill-bad"
+    if any(token in text for token in ("CAUTION", "ELEVATED", "TIGHTENING", "INFLATION", "WEAK")):
+        return "pill-warn"
+    return "pill-info"
+
+def _format_idr(value):
+    return f"Rp {float(value):,.0f}"
+
+st.markdown(
+    """
+<div class="hero-card">
+  <div class="hero-kicker">Macro-aware execution workspace</div>
+  <div class="hero-title">IDX Macro Trading Dashboard — Gen 7</div>
+  <div class="hero-subtitle">A clearer workflow: read the regime, confirm allocation, scan candidates, then run a focused execution plan.</div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+st.caption("Build: gen7-clarity-rebuild")
 
 @st.cache_data(ttl=900, show_spinner=False)
 def load_yf_data(symbol, period="6mo", interval="1d"):
@@ -358,8 +447,16 @@ def load_fred_bundle(api_key=None):
     return out
 
 # ── SIDEBAR (GEN 7 REFACTOR) ─────────────────────────────────────────────────
-st.sidebar.header("⚙️ Settings")
-with st.sidebar.expander("Universe and filters", expanded=True):
+st.sidebar.header("🎛️ Control Center")
+st.sidebar.caption("Set risk once, then follow the 4-step workflow in the main panel.")
+st.sidebar.markdown("""
+**Workflow**
+1. Confirm regime and guardrails.  
+2. Review allocation and sector flow.  
+3. Run the momentum screen.  
+4. Run deep analysis only on finalists.
+""")
+with st.sidebar.expander("Portfolio, universe, and filters", expanded=True):
     portfolio_raw = st.text_input(
         "Portfolio Value (IDR)",
         value="100,000,000",
@@ -567,12 +664,23 @@ guardrails = {
 mode_payload = detect_operating_mode(vix_now, dg_score, guardrails)
 
 color_map = {"blue": "#1E88E5", "amber": "#F9A825", "green": "#2E7D32", "red": "#C62828"}
+guardrail_summary = " · ".join([
+    f"Credit {'ON' if guardrails['credit_spread>8'] else 'OFF'}",
+    f"CPI {'ON' if guardrails['cpi>3'] else 'OFF'}",
+    f"Margin rising {'ON' if guardrails['margin_rising'] else 'OFF'}",
+])
 st.markdown(
     f"""
-<div style="padding:16px;border-radius:12px;background:{color_map.get(mode_payload['color'], '#1E88E5')};color:white;margin-bottom:14px;">
-<b>{mode_payload['mode']}</b> — {mode_payload['message']}<br/>
-VIX: {vix_now:.2f} ({vix_bucket}) | DG score: {dg_score}/5 | Sizing: {mode_payload['risk_guidance']}<br/>
-Guardrails: Credit>{'ON' if guardrails['credit_spread>8'] else 'OFF'}, CPI>{'ON' if guardrails['cpi>3'] else 'OFF'}, Margin rising={'ON' if guardrails['margin_rising'] else 'OFF'}
+<div class="status-card" style="border-left: 6px solid {color_map.get(mode_payload['color'], '#38bdf8')};">
+  <div class="hero-kicker">Today’s operating mode</div>
+  <div style="font-size:1.7rem;font-weight:800;margin:.15rem 0 .35rem;">{mode_payload['mode']}</div>
+  <div class="muted-copy">{mode_payload['message']}</div>
+  <div class="status-grid">
+    <div class="status-item"><div class="status-label">VIX alarm</div><div class="status-value">{vix_now:.2f} <span class="pill {_status_class(vix_bucket)}">{vix_bucket}</span></div></div>
+    <div class="status-item"><div class="status-label">DG checklist</div><div class="status-value">{dg_score}/5</div></div>
+    <div class="status-item"><div class="status-label">Sizing guidance</div><div class="status-value">{mode_payload['risk_guidance']}</div></div>
+    <div class="status-item"><div class="status-label">Guardrails</div><div class="status-value" style="font-size:.92rem;">{guardrail_summary}</div></div>
+  </div>
 </div>
 """,
     unsafe_allow_html=True,
@@ -581,7 +689,7 @@ Guardrails: Credit>{'ON' if guardrails['credit_spread>8'] else 'OFF'}, CPI>{'ON'
 # ═══════════════════════════════════════════════════════════
 # 1. REGIME + MACRO
 # ═══════════════════════════════════════════════════════════
-st.header("1. Market Regime + Macro")
+_section_header("1", "Market Regime + Macro", "Start here: today’s risk posture, macro drivers, and the operating mode guardrails.")
 
 cmap={"CRISIS":"error","RISK_OFF":"error","TIGHTENING":"warning",
       "INFLATION":"warning","RISK_ON":"success","NEUTRAL":"info"}
@@ -733,7 +841,7 @@ with dg_container:
 # ═══════════════════════════════════════════════════════════
 # 2. ALLOCATION + MONEY FLOW + SECTOR ACTION
 # ═══════════════════════════════════════════════════════════
-st.header("2. Portfolio Allocation + Money Flow")
+_section_header("2", "Allocation + Money Flow", "Translate the regime into portfolio budgets, sector flow, and specific cross-asset proxies.")
 
 open_trade_rows, open_trade_err = safe_select(supabase_client, "trades", columns="risk_pct,status", limit=500)
 open_trade_rows = [r for r in open_trade_rows if str(r.get("status", "OPEN")).upper() == "OPEN"]
@@ -762,10 +870,10 @@ with cl:
     for sector,pct in allocation.items():
         amount=portfolio_value*pct; bar="█"*int(pct*40)
         st.markdown(f"{'🟢' if sector!='Cash' else '⚪'} **{sector}**: {pct*100:.0f}%  `{bar}`")
-        st.caption(f"→ Rp {amount:,.0f}")
+        st.caption(f"→ {_format_idr(amount)}")
     st.divider()
-    st.caption(f"🔥 High-Beta: Rp {budget_map['high_beta_budget']:,.0f}")
-    st.caption(f"💵 Cash: Rp {budget_map['cash_reserve']:,.0f}")
+    st.caption(f"🔥 High-Beta: {_format_idr(budget_map['high_beta_budget'])}")
+    st.caption(f"💵 Cash: {_format_idr(budget_map['cash_reserve'])}")
 
 with cr:
     fig,ax=plt.subplots(figsize=(5,4)); ax.set_facecolor("#0f1117")
@@ -860,7 +968,7 @@ st.markdown(" • " + "\n • ".join(sector_stocks))
 # ═══════════════════════════════════════════════════════════
 # 3. MOMENTUM SCREEN
 # ═══════════════════════════════════════════════════════════
-st.header("3. Universe Scanner")
+_section_header("3", "Universe Scanner", "Run this after confirming the sector bias. The scan feeds the deep-analysis plan.")
 _base_universe = resolve_universe(selected_universe)
 scan_universe = (
     sector_stocks
@@ -956,7 +1064,7 @@ if sector_action["strength"] in ("STRONG", "MODERATE") and not use_sector:
 # ═══════════════════════════════════════════════════════════
 # 4. DEEP ANALYSIS
 # ═══════════════════════════════════════════════════════════
-st.header("4. Deep Signal Analysis")
+_section_header("4", "Deep Signal Analysis", "Convert screened candidates into execution-ready setups, sizing, checklist, journal, and alerts.")
 st.caption(f"Threshold: {threshold} | Risk/trade: {risk_pct_input*100:.1f}% | "
            f"Weights: {'🧠 Learned' if use_learned and journal_stats else '📐 Default'}")
 st.caption(f"Analysis context: **{mode_payload['mode']}** — sizing guidance: **{mode_payload['risk_guidance']}**")
